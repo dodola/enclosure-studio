@@ -11,6 +11,7 @@ import PhotosPanel, { photoGuide } from './components/PhotosPanel';
 import ShellSettings from './components/ShellSettings';
 import AgentPanel from './components/AgentPanel';
 import { useAI } from './ai';
+import { LogoutButton } from './auth';
 
 const Scene3D = lazy(() => import('./components/Scene3D'));
 
@@ -75,6 +76,12 @@ export default function App() {
     const timer = setTimeout(() => { set('enclosure-project-v1', project).then(() => setSaveStatus('已保存至本机')).catch(() => setSaveStatus('保存失败，请导出项目备份')); }, 500);
     return () => clearTimeout(timer);
   }, [project, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    // Preserve the latest edit if session expiry unmounts the workspace before autosave.
+    return () => { void set('enclosure-project-v1', projectRef.current).catch(() => {}); };
+  }, [loaded]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -163,7 +170,7 @@ export default function App() {
       <div className="sidebar-guide"><span className="guide-camera"><Camera size={22} /></span><strong>拍得准确，装得合适。</strong><p>准备好板件的多个视角，少走一次试打印弯路。</p><button onClick={() => setGuideOpen(true)}>查看拍照指南 <ArrowUpRight size={14} /></button></div>
       <div className="sidebar-bottom"><HardDrive size={14} /><span>本地工作区</span><Badge>v0.1</Badge></div>
     </aside>
-    <div className="main-shell"><header className="topbar"><div className="breadcrumb"><span>我的项目</span><ChevronRight size={13} /><button onClick={() => { setNameDraft(project.name); setProjectOpen(true); }}>{project.name}<Pencil size={12} /></button></div><div className="topbar-actions"><span className="save-status"><span className={cn('status-dot', saveStatus.includes('失败') && 'status-error')} />{saveStatus}</span><button className="button button-small" onClick={ai.openSettings}>AI 设置</button><button className="icon-button" aria-label="打开使用与拍照指南" onClick={() => setGuideOpen(true)}><HelpCircle size={19} /></button><button className="button button-primary" onClick={() => setStep('export')}><Download size={15} />导出模型</button></div></header>
+    <div className="main-shell"><header className="topbar"><div className="breadcrumb"><span>我的项目</span><ChevronRight size={13} /><button onClick={() => { setNameDraft(project.name); setProjectOpen(true); }}>{project.name}<Pencil size={12} /></button></div><div className="topbar-actions"><span className="save-status"><span className={cn('status-dot', saveStatus.includes('失败') && 'status-error')} />{saveStatus}</span><button className="button button-small" onClick={ai.openSettings}>AI 设置</button><LogoutButton disabled={!loaded} beforeLogout={() => set('enclosure-project-v1', projectRef.current)} /><button className="icon-button" aria-label="打开使用与拍照指南" onClick={() => setGuideOpen(true)}><HelpCircle size={19} /></button><button className="button button-primary" onClick={() => setStep('export')}><Download size={15} />导出模型</button></div></header>
       <nav className="mobile-nav" aria-label="设计步骤">{steps.map(s => <button key={s.id} className={cn(step === s.id && 'is-active')} onClick={() => setStep(s.id)}>{s.label}</button>)}</nav>
       <div className="workspace"><main className="workspace-main">
         {step === 'agent' && <><div className="page-title-row"><div><span className="eyebrow">AI DESIGN WORKSPACE</span><h1>通过对话，调整你的模型。</h1><p>Pi 读取当前项目，调用设计工具，检查通过后更新预览。</p></div></div><div className="agent-workspace">{canvas}<AgentPanel project={project} selectedId={part?.id} onApply={applyAgentProject} onUndo={undo} canUndo={Boolean(history.length)} /></div></>}

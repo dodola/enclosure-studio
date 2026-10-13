@@ -387,3 +387,22 @@
   .file-manifest > div:not(.card-header) { @apply flex-wrap; }
   .file-manifest > div:not(.card-header) span { @apply pl-7; }
 }
+
+@layer components {
+  .login-page { @apply flex min-h-dvh items-center justify-center bg-slate-50 p-6; }
+  .login-card { @apply w-full max-w-md p-8; }
+  .login-brand { @apply flex items-center gap-3; }
+  .login-brand strong { @apply text-xl font-semibold; }
+  .login-brand strong span { @apply mt-1 block text-xs font-normal text-slate-500; }
+  .login-heading { @apply mb-6 mt-10; }
+  .login-heading > svg { @apply mb-3 text-teal-700; }
+  .login-heading h1 { @apply text-2xl font-semibold; }
+  .login-heading p { @apply mt-2 text-sm leading-6 text-slate-500; }
+  .login-hint { @apply mt-6 border-t border-slate-200 pt-4 text-xs leading-6 text-slate-500; }
+  .auth-notice { @apply fixed bottom-4 left-4 z-50 rounded-lg bg-white p-4 text-sm text-red-700 shadow-lg; bottom: max(1rem, env(safe-area-inset-bottom)); }
+}
+@media (max-width: 767px) {
+  .login-page { @apply p-4; }
+  .login-card { @apply p-6; }
+  .topbar-actions .save-status { @apply hidden; }
+}

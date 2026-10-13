@@ -45,14 +45,17 @@ npm run dev
 | FastAPI | `http://127.0.0.1:8011` | 图像校准、几何检查、实体生成与导出 |
 | Pi | `http://127.0.0.1:8012` | AI 预标注与流式对话，由 FastAPI 代理 |
 
-本机构建运行：
+局域网部署（带管理员登录）：
 
 ```bash
+npm run setup:login
 npm run build
 npm start
 ```
 
-构建后打开 **http://localhost:8011**。当前是单个浏览器的本地工作区，不包含账号、云端协作或公网访问控制。
+构建后打开 **http://localhost:5176**，同一局域网设备访问 `http://服务器局域网IP:5176`。首次配置生成 `admin` 账户，随机密码保存在本机 `.pi-state/login-password.txt`；页面与全部业务接口均需登录，Pi 仅监听本机且验证内部凭据。
+
+Linux 可停止开发服务后运行 `npm run deploy:service`，安装自动启动的 systemd 用户服务。账户管理、重启和部署细节见 [局域网部署指南](docs/lan-deployment.md)。项目仍保存在各浏览器，跨设备可用项目 JSON 导入导出，尚无同步功能。当前使用局域网 HTTP；需要传输加密时在服务前配置 HTTPS 反向代理。
 
 ## AI 配置
 

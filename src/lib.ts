@@ -6,7 +6,8 @@ import { autoLayoutProject, createComponent, normaliseProject } from '../shared/
 export { changeMount, faceDimensions, imagePointToPanel, imageRectToPanel, isSideMount, mountNames, normaliseProject, resizeEnclosure, templates } from '../shared/design.mjs';
 
 export const cn = (...classes: ClassValue[]) => twMerge(clsx(classes));
-export const uid = () => crypto.randomUUID();
+export { uid } from '../shared/browser-id.mjs';
+import { uid } from '../shared/browser-id.mjs';
 export const kindNames: Record<Kind, string> = { board: '开发板', screen: '屏幕', keyboard: '键盘', button: '按钮', switch: '开关', encoder: '旋钮 / 编码器', battery: '电池', speaker: '扬声器', module: '扩展模块' };
 export const kindColors: Record<Kind, string> = { board: '#537d68', screen: '#394f61', keyboard: '#64748b', button: '#b88543', switch: '#64748b', encoder: '#657e7a', battery: '#627869', speaker: '#5c7482', module: '#748078' };
 export const photoNames: Record<PhotoSlot, string> = { top: '正面俯视', bottom: '背面俯视', front: '接口侧面', side: '高度侧面' };
@@ -56,6 +57,7 @@ export function geometryPayload(project: Project) {
 
 export async function responseError(response: Response) {
   const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && data.detail === '请先登录。') window.dispatchEvent(new Event('enclosure:unauthorized'));
   return typeof data.detail === 'string' ? data.detail : '请求未完成，请检查尺寸或服务状态。';
 }
 

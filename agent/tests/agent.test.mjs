@@ -107,7 +107,8 @@ data = r.json()
 if sys.argv[1].endswith('preview'):
     data = {part: {'watertight': data[part]['watertight']} for part in ['base', 'lid']}
 print(json.dumps(data))`;
-    const { stdout } = await run(python, ['-c', script, path, JSON.stringify(value)], { cwd, signal });
+    const { stdout } = await run(python, ['-c', script, path, JSON.stringify(value)], { cwd, signal,
+      env: { ...process.env, ENCLOSURE_AUTH_FILE: '/dev/null/enclosure-test-no-auth', ENCLOSURE_AUTH_REQUIRED: '0' } });
     return JSON.parse(stdout);
 };
 

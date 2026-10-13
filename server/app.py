@@ -12,8 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from .geometry import build, mounting_coupon, printable_lid, serialise
 from .models import Project, validate_design
 from .vision import analyse
+from .auth import install_auth, login_store
 
 app = FastAPI(title="壳研 Enclosure Studio", version="0.1.0")
+install_auth(app)
 
 
 @app.get("/api/health")
@@ -39,9 +41,13 @@ async def ai_proxy(path: str, request: Request):
         raise HTTPException(413, "请求体过大。")
     client = httpx.AsyncClient(timeout=httpx.Timeout(190, connect=5))
     try:
+        headers = {"Content-Type": "application/json"}
+        store = login_store()
+        if store.enabled:
+            headers["X-Enclosure-Internal"] = store.config["internalToken"]
         upstream = await client.send(client.build_request(request.method,
             f"http://127.0.0.1:{os.environ.get('PI_PORT', '8012')}/api/ai/{path}",
-            content=body, headers={"Content-Type": "application/json"}), stream=True)
+            content=body, headers=headers), stream=True)
     except httpx.HTTPError as exc:
         await client.aclose()
         raise HTTPException(503, "Pi AI 服务未启动，请运行 npm run dev 或 npm start。") from exc

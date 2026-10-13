@@ -4,10 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/concurrently.js -k -n api,ai,web \".venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port 8011 --reload --reload-dir server\" \"npm run dev:ai\" \"vite --host 0.0.0.0\"",
+    "dev": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/concurrently.js -k -n api,ai,web \".venv/bin/python -m uvicorn server.app:app --host 127.0.0.1 --port 8011 --reload --reload-dir server\" \"npm run dev:ai\" \"vite --host 127.0.0.1\"",
     "build": "tsc -b && vite build",
     "test": ".venv/bin/python -m pytest server/tests -q && npm run test:agent",
-    "start": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/concurrently.js -k -n api,ai \".venv/bin/python -m uvicorn server.app:app --host 0.0.0.0 --port 8011\" \"node --env-file-if-exists=.env agent/server.mjs\"",
+    "start": "node scripts/serve.mjs",
+    "setup:login": "PYTHONPATH=. .venv/bin/python scripts/setup_login.py",
+    "deploy:service": "node scripts/install_service.mjs",
     "dev:ai": "node --watch agent/server.mjs",
     "test:agent": "node --test agent/tests/*.test.mjs"
   },

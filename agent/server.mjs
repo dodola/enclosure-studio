@@ -1,10 +1,13 @@
 import { createServer } from 'node:http';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { annotationSchema, createDesignTools, normaliseAnnotations, stripPhotos } from './domain.mjs';
 import { annotationPrompt, assertFinished, configFor, configureRuntime, createRuntime, createSession, designPrompt, selectModel } from './pi.mjs';
 import { providerFailure } from './request-errors.mjs';
+import { protectInternal } from './http-auth.mjs';
 
 const failure = (message, status = 422) => Object.assign(new Error(message), { status });
 async function readBody(req, limit = 20 * 1024 * 1024) {
@@ -157,17 +160,21 @@ export function createHandler({ context, sessionFactory = createSession, geometr
 
 async function main() {
   if (existsSync('.env')) process.loadEnvFile('.env');
+  const authFile = resolve(process.env.ENCLOSURE_AUTH_FILE || '.pi-state/login.json');
+  const login = existsSync(authFile) ? JSON.parse(await readFile(authFile, 'utf8')) : null;
+  const internalToken = login?.internalToken;
+  if ((login || process.env.ENCLOSURE_AUTH_REQUIRED === '1') && (typeof internalToken !== 'string' || internalToken.length < 32)) throw new Error('登录配置无效，请配置登录账户后重启。');
   const context = await createRuntime();
   const geometry = async (path, project, signal) => {
     const response = await fetch(`${process.env.GEOMETRY_URL || 'http://127.0.0.1:8011'}${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project), signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(internalToken ? { 'X-Enclosure-Internal': internalToken } : {}) }, body: JSON.stringify(project), signal,
     });
     const data = await response.json();
     if (!response.ok) throw failure(typeof data.detail === 'string' ? data.detail : '项目尺寸或字段无效。');
     return data;
   };
   const handler = createHandler({ context, geometry });
-  const server = createServer(handler);
+  const server = createServer(protectInternal(handler, internalToken));
   server.listen(Number(process.env.PI_PORT || 8012), '127.0.0.1', () => console.log('Pi AI service: http://127.0.0.1:' + (process.env.PI_PORT || 8012) + ' · ' + (configFor(context).configured ? 'credentials configured' : 'awaiting credentials')));
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { handler.dispose(); server.close(); });
 }

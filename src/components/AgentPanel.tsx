@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { MessageSquare, Send, Square, Plus, Check, AlertTriangle, Undo2 } from 'lucide-react';
 import type { Project } from '../types';
 import { AIModelSelect, AISetup, readAIStream, useAI } from '../ai';
-import { cn, geometryPayload } from '../lib';
+import { cn, geometryPayload, uid } from '../lib';
 import { Badge, Note } from './ui';
 
 interface Message { id: string; role: 'user' | 'assistant'; text: string; tools?: { id: string; name: string; status: string }[]; changes?: string[]; applied?: boolean; notice?: string }
@@ -21,10 +21,10 @@ export default function AgentPanel({ project, selectedId, onApply, onUndo, canUn
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'nearest' }); }, [messages]);
   const send = async (text = draft) => {
     if (!text.trim() || busy || !ai.model?.configured) return;
-    const base = project, selectedModel = ai.model, id = crypto.randomUUID();
+    const base = project, selectedModel = ai.model, id = uid();
     const aborter = new AbortController(); controller.current = aborter;
     setBusy(true); setError(''); setDraft('');
-    setMessages(current => [...current, { id: crypto.randomUUID(), role: 'user', text: text.trim() }, { id, role: 'assistant', text: '', tools: [] }]);
+    setMessages(current => [...current, { id: uid(), role: 'user', text: text.trim() }, { id, role: 'assistant', text: '', tools: [] }]);
     const update = (patch: (m: Message) => Message) => setMessages(current => current.map(m => m.id === id ? patch(m) : m));
     try {
       const response = await fetch('/api/ai/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: aborter.signal,
