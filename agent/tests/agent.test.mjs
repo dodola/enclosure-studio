@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { applyEdits, createDesignTools, normaliseAnnotations } from '../domain.mjs';
+import { applyEdits, createDesignTools, normaliseAnnotations, stripPhotos } from '../domain.mjs';
 import { createHandler, parseImage } from '../server.mjs';
 import { createSession } from '../pi.mjs';
 
@@ -58,7 +61,7 @@ test('only calibrated plane annotations become mm; malformed bounds are rejected
 });
 
 // A controlled model endpoint drives the REAL Pi SDK, tool loop and streaming parser.
-async function fixture(t, replies) {
+async function fixture(t, replies, geometry = fakeGeometry) {
   const requests = [];
   const provider = createServer(async (req, res) => {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -78,7 +81,7 @@ async function fixture(t, replies) {
   runtime.registerProvider('fixture', { baseUrl: providerUrl + '/v1', api: 'openai-completions', apiKey: 'test-only-key', models: [{ id: 'fixture', name: 'Fixture', reasoning: false, input: ['text', 'image'], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] });
   await runtime.setRuntimeApiKey('fixture', 'test-only-key');
   const context = { runtime, provider: 'fixture', preferred: 'fixture', agentDir: '/tmp/enclosure-fixture-agent' };
-  const handler = createHandler({ context, geometry: fakeGeometry, sessionFactory: async (...args) => {
+  const handler = createHandler({ context, geometry, sessionFactory: async (...args) => {
     const session = await createSession(...args);
     assert.deepEqual(session.getActiveToolNames().sort(), args[2].map(t => t.name).sort());
     return session;
@@ -89,6 +92,40 @@ async function fixture(t, replies) {
 }
 const post = (url, path, body, signal) => fetch(url + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'fixture', model: 'fixture', ...body }), signal });
 const events = async response => (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+
+test('real Pi SDK sets corner radius using real geometry and rejects excessive rounding atomically', async t => {
+  const python = fileURLToPath(new URL('../../.venv/bin/python', import.meta.url));
+  const cwd = fileURLToPath(new URL('../../', import.meta.url));
+  const run = promisify(execFile);
+  const geometry = async (path, value) => {
+    const script = `import json, sys
+from fastapi.testclient import TestClient
+from server.app import app
+r = TestClient(app).post(sys.argv[1], json=json.loads(sys.argv[2]))
+if r.status_code != 200: raise RuntimeError(r.text)
+data = r.json()
+if sys.argv[1].endswith('preview'):
+    data = {part: {'watertight': data[part]['watertight']} for part in ['base', 'lid']}
+print(json.dumps(data))`;
+    const { stdout } = await run(python, ['-c', script, path, JSON.stringify(value)], { cwd });
+    return JSON.parse(stdout);
+  };
+  const f = await fixture(t, [
+    { tool: 'inspect_design' },
+    { tool: 'edit_design', args: { reason: '尝试过大圆角', enclosure: { cornerRadius: 64 } } },
+    { tool: 'edit_design', args: { reason: '四角改为R12', enclosure: { cornerRadius: 12 } } },
+    { text: '已将四角设为 R12，几何检查通过。' },
+  ], geometry);
+  const stream = await events(await post(f.url, '/api/ai/chat', { project, message: '外壳四角改成R12，其他尺寸保留' }));
+  const done = stream.find(e => e.type === 'done');
+  assert.equal(done.project.enclosure.cornerRadius, 12);
+  assert.deepEqual(done.project.components, stripPhotos(project).components);
+  assert.deepEqual(done.project.ports, project.ports);
+  assert.equal(done.changes.length, 1);
+  assert.ok(stream.some(e => e.type === 'tool' && e.status === 'rejected'));
+  assert.throws(() => applyEdits(project, { reason: '负数圆角', enclosure: { cornerRadius: -1 } }));
+  assert.throws(() => applyEdits(project, { reason: '不支持的倒角', enclosure: { chamfer: 2 } }));
+});
 
 test('real Pi SDK streams tool calls, repairs a rejected edit, and keeps follow-up context current', async t => {
   const f = await fixture(t, [

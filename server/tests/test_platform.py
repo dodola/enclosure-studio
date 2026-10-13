@@ -8,9 +8,10 @@ import numpy as np
 import pytest
 import trimesh
 from fastapi.testclient import TestClient
+from manifold3d import Manifold, Mesh
 
 from server.app import app
-from server.geometry import build, printable_lid
+from server.geometry import box, build, printable_lid
 from server.models import Project, validate_design
 from server.vision import analyse
 
@@ -20,6 +21,111 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def project():
     return Project.model_validate_json((ROOT / 'server/example-project.json').read_text())
+
+
+def solid(mesh_value):
+    return Manifold(Mesh(np.float32(mesh_value.vertices), np.uint32(mesh_value.faces)))
+
+
+def test_legacy_project_defaults_to_square_corners(project):
+    data = project.model_dump()
+    del data['enclosure']['cornerRadius']
+    legacy = Project.model_validate(data)
+    assert legacy.enclosure.cornerRadius == 0
+    base, _, _ = build(legacy)
+    assert (solid(base) ^ box(0, 0, 0, 1, 1, 1)).volume() == pytest.approx(1)
+
+
+@pytest.mark.parametrize('radius', [1, 10, 12, 63])
+def test_rounded_solids_keep_bounds_and_the_lid_fits_without_intersection(project, radius):
+    project.enclosure.cornerRadius = radius
+    project.enclosure.ventilation = False
+    project.ports = []
+    # Central board allows testing even the maximum permitted capsule footprint.
+    board = project.components[0]
+    board.width = board.depth = 20
+    board.x, board.y = 53, 74
+    board.height, board.holes = 4, []
+    project.components = [board]
+    base, lid, _ = build(project)
+    assert base.is_watertight and lid.is_watertight
+    assert base.body_count == lid.body_count == 1
+    assert np.allclose(base.bounds, [[0, 0, 0], [126, 168, 35.6]])
+    assert np.allclose(lid.bounds[1], [126, 168, 38])
+    assert abs((solid(base) ^ solid(lid)).volume()) < 1e-4
+    # Actual corner material is removed, including at the bottom and top plate.
+    assert (solid(base) ^ box(0, 0, 0, .2, .2, 1)).volume() < 1e-7
+    assert (solid(lid) ^ box(0, 0, 37, .2, .2, 1)).volume() < 1e-7
+
+
+def test_r12_has_offset_inner_arc_and_no_boss_bulges(project):
+    project.enclosure.cornerRadius = 12
+    base, lid, _ = build(project)
+    base_solid = solid(base)
+    # Probe the inner curve near its left tangent, away from screw bosses.
+    for radial, expected in [(9.4, 0), (9.8, .001)]:
+        x, y = 12 - radial * np.cos(.08), 12 - radial * np.sin(.08)
+        probe = box(x - .05, y - .05, 15, .1, .1, .1)
+        assert (base_solid ^ probe).volume() == pytest.approx(expected, abs=1e-7)
+    # Every vertex in a corner quadrant must stay inside the outer circular arc.
+    for value in [base, lid]:
+        for cx, cy, sx, sy in [(12, 12, -1, -1), (114, 12, 1, -1), (12, 156, -1, 1), (114, 156, 1, 1)]:
+            vertices = value.vertices[(sx * (value.vertices[:, 0] - cx) > 0) & (sy * (value.vertices[:, 1] - cy) > 0)]
+            assert np.all(np.linalg.norm(vertices[:, :2] - [cx, cy], axis=1) <= 12.0001)
+
+
+def test_radius_limits_and_curved_cavity_collisions_block_export(project):
+    client = TestClient(app)
+    project.enclosure.cornerRadius = 64
+    assert any(i['code'] == 'corner-radius' for i in validate_design(project))
+    assert client.post('/api/preview', json=project.model_dump()).status_code == 422
+    assert client.post('/api/export', json=project.model_dump()).status_code == 422
+    project.enclosure.cornerRadius = -1
+    assert client.post('/api/validate', json=project.model_dump()).status_code == 422
+    project.enclosure.cornerRadius = 0
+    # This small box clears the straight walls and the original 6 mm corner boss.
+    from server.models import Component
+    project.components = [Component(id='corner-board', kind='board', name='角部板件', width=3, depth=3, height=4, x=3, y=10.1, z=7)]
+    project.ports = []
+    assert not any(i['severity'] == 'error' for i in validate_design(project))
+    project.enclosure.cornerRadius = 12
+    assert any(i['code'] == 'bounds' for i in validate_design(project))
+    assert client.post('/api/export', json=project.model_dump()).status_code == 422
+
+
+def test_curved_wall_standoff_and_port_checks(project):
+    from server.models import Component, Hole, Port
+    project.ports = []
+    project.components = [Component(id='near-corner', kind='board', name='边角板件', width=4, depth=4, height=4, x=5.5, y=9.8, z=7,
+                                    holes=[Hole(id='h', x=0, y=0, diameter=3.5)])]
+    assert not any(i['code'] == 'hole-wall' for i in validate_design(project))
+    project.enclosure.cornerRadius = 12
+    assert any(i['code'] == 'hole-wall' for i in validate_design(project))
+    # The connector fits a rectangular side but enters the R12 curved section.
+    project = Project.model_validate_json((ROOT / 'server/example-project.json').read_text())
+    board = project.components[0]
+    board.width, board.depth, board.x, board.y, board.holes = 20, 10, 10.1, 155.1, []
+    project.components = [board]
+    project.ports = [Port(id='corner-port', componentId=board.id, name='角部接口', edge='front', offset=1, width=2, height=5, z=2)]
+    assert not any(i['severity'] == 'error' for i in validate_design(project))
+    project.enclosure.cornerRadius = 12
+    assert any(i['code'] == 'port-corner' for i in validate_design(project))
+
+
+def test_rounded_preview_and_export_use_the_same_solids(project):
+    project.enclosure.cornerRadius = 12
+    client = TestClient(app)
+    preview = client.post('/api/preview', json=project.model_dump()).json()
+    response = client.post('/api/export', json=project.model_dump())
+    assert response.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    manifest = json.loads(archive.read('assembly.json'))
+    assert manifest['enclosure']['cornerRadius'] == 12
+    assert 'R12 mm' in archive.read('README.md').decode()
+    for part in ['base', 'lid']:
+        exported = trimesh.load(io.BytesIO(archive.read(part + '.stl')), file_type='stl')
+        assert exported.is_watertight
+        assert exported.volume == pytest.approx(preview[part]['volume'], abs=.1)
 
 
 def test_sample_is_watertight_and_has_correct_outer_bounds(project):

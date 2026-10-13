@@ -1,13 +1,19 @@
 import { clsx } from 'clsx';
 import type { ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import type { Kind, Part, Project, PhotoSlot } from './types';
+import type { Enclosure, Kind, Part, Project, PhotoSlot } from './types';
 
 export const cn = (...classes: ClassValue[]) => twMerge(clsx(classes));
 export const uid = () => crypto.randomUUID();
 export const kindNames: Record<Kind, string> = { board: '开发板', screen: '屏幕', keyboard: '键盘', button: '按钮' };
 export const kindColors: Record<Kind, string> = { board: '#537d68', screen: '#394f61', keyboard: '#64748b', button: '#b88543' };
 export const photoNames: Record<PhotoSlot, string> = { top: '正面俯视', bottom: '背面俯视', front: '接口侧面', side: '高度侧面' };
+
+export function fasteningPoints(e: Enclosure) {
+  // Same contained 4 mm radius bosses as server/footprint.py.
+  const inset = Math.max(6, e.cornerRadius - (e.cornerRadius - 4 - .1) / Math.SQRT2);
+  return [[inset, inset], [e.width - inset, inset], [inset, e.depth - inset], [e.width - inset, e.depth - inset]];
+}
 
 export function newPart(kind: Kind, project: Project): Part {
   const templates = {
@@ -30,7 +36,7 @@ export const sampleProject = (): Project => ({
   version: 1,
   name: '便携开发终端',
   enclosure: { width: 126, depth: 168, height: 38, wall: 2.4, floor: 2.4, lid: 2.4,
-    clearance: 0.5, standoffDiameter: 6, screwDiameter: 3.4, pilotDiameter: 2.6, lipHeight: 2.4, ventilation: true },
+    clearance: 0.5, standoffDiameter: 6, screwDiameter: 3.4, pilotDiameter: 2.6, lipHeight: 2.4, cornerRadius: 0, ventilation: true },
   components: [
     { id: 'firefly', kind: 'board', name: 'Firefly 开发板', width: 81, depth: 88, height: 18,
       x: 22.5, y: 77.1, z: 7, mount: 'base', mountOffset: 1.5, openingWidth: 0, openingDepth: 0, verified: false,
@@ -100,5 +106,5 @@ export async function validateImport(value: unknown): Promise<Project> {
   if (!p || p.version !== 1 || !Array.isArray(p.components) || !p.enclosure || !Array.isArray(p.ports)) throw new Error('不是有效的壳研项目文件。');
   const response = await fetch('/api/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
   if (!response.ok) throw new Error('项目尺寸或字段无效，请检查 JSON 文件。');
-  return { version: 1, name: p.name, enclosure: p.enclosure, ports: p.ports, components: p.components.map(c => ({ ...c, mountOffset: c.mountOffset || 0, photos: c.photos || {} })) };
+  return { version: 1, name: p.name, enclosure: { ...p.enclosure, cornerRadius: p.enclosure.cornerRadius ?? 0 }, ports: p.ports, components: p.components.map(c => ({ ...c, mountOffset: c.mountOffset || 0, photos: c.photos || {} })) };
 }

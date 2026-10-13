@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .footprint import FASTENER_RADIUS, fastening_points, footprint_distance, rectangle_fits, ventilation_positions
+
 
 class Hole(BaseModel):
     id: str = Field(max_length=100)
@@ -57,6 +59,7 @@ class Enclosure(BaseModel):
     screwDiameter: float = Field(ge=2, le=5)
     pilotDiameter: float = Field(ge=1.5, le=4)
     lipHeight: float = Field(ge=0, le=5)
+    cornerRadius: float = Field(ge=0, le=225, default=0)
     ventilation: bool = True
 
 
@@ -88,11 +91,15 @@ def validate_design(project: Project) -> list[dict]:
         add("pilot", "螺丝导孔应小于上盖螺丝通孔。")
     if e.standoffDiameter <= e.screwDiameter + 1.2:
         add("boss", "支撑柱外径太小，请为螺孔保留至少 0.6 mm 壁厚。")
-    fastening_points = [(6, 6), (e.width - 6, 6), (6, e.depth - 6), (e.width - 6, e.depth - 6)]
+    if e.cornerRadius > min(e.width, e.depth) / 2:
+        add("corner-radius", "外壳四角半径不能超过宽度与长度中较小值的一半。")
+    if e.ventilation and len(ventilation_positions(e.width, e.cornerRadius)) < 9:
+        add("ventilation-corners", "圆角占用了部分后侧直壁；仅在剩余直壁生成通风孔。", "warning")
+    screw_points = fastening_points(e.width, e.depth, e.cornerRadius)
     openings = []
     for c in project.components:
-        if c.x < e.wall + e.clearance - 0.001 or c.y < e.wall + e.clearance - 0.001 or c.x + c.width > e.width - e.wall - e.clearance + 0.001 or c.y + c.depth > e.depth - e.wall - e.clearance + 0.001:
-            add("bounds", f"{c.name} 超出内腔或装配间隙，请调整位置或扩大外壳。", component_id=c.id)
+        if not rectangle_fits(c.x, c.y, c.width, c.depth, e.width, e.depth, e.cornerRadius, e.wall + e.clearance):
+            add("bounds", f"{c.name} 超出内腔或装配间隙（含四角圆弧），请调整位置、减小圆角或扩大外壳。", component_id=c.id)
         mount_plane = c.z + c.height - c.mountOffset
         panel = c.mount == "lid" and c.kind != "board"
         if c.z < e.floor - 0.001 or (not panel and c.z + c.height > e.height - e.lid + 0.001) or (panel and (mount_plane > e.height - e.lid + 0.001 or c.z + c.height > e.height + 20)):
@@ -101,10 +108,10 @@ def validate_design(project: Project) -> list[dict]:
             add("panel-recess", f"{c.name} 的操作表面低于上盖外表面，请核对底面 Z 与安装基准。", "warning", c.id)
         if c.mountOffset > c.height:
             add("mount-offset", f"{c.name} 的安装基准偏移不能超过组件总高。", component_id=c.id)
-        for sx, sy in fastening_points:
+        for sx, sy in screw_points:
             nearest_x = min(max(sx, c.x), c.x + c.width)
             nearest_y = min(max(sy, c.y), c.y + c.depth)
-            if (nearest_x - sx) ** 2 + (nearest_y - sy) ** 2 < 4 ** 2:
+            if (nearest_x - sx) ** 2 + (nearest_y - sy) ** 2 < FASTENER_RADIUS ** 2:
                 add("fastener-collision", f"{c.name} 与外壳角部螺丝柱相交。", component_id=c.id)
                 break
         for hole in c.holes:
@@ -113,8 +120,8 @@ def validate_design(project: Project) -> list[dict]:
                 add("hole", f"{c.name} 的安装孔不在组件范围内。", component_id=c.id)
             if hole.diameter <= e.pilotDiameter:
                 add("hole-screw", f"{c.name} 的安装孔小于支撑柱导孔，请核对孔径。", component_id=c.id)
-            if c.x + hole.x - r < e.wall or c.x + hole.x + r > e.width - e.wall or c.y + hole.y - r < e.wall or c.y + hole.y + r > e.depth - e.wall:
-                add("hole-wall", f"{c.name} 的支撑柱与侧壁相交，请增加边距。", component_id=c.id)
+            if footprint_distance(c.x + hole.x, c.y + hole.y, e.width, e.depth, e.cornerRadius, e.wall) + r > 0.001:
+                add("hole-wall", f"{c.name} 的支撑柱与侧壁或内腔圆角相交，请增加边距。", component_id=c.id)
         if c.mount == "lid" and c.kind != "board":
             if c.kind == "button" and abs(c.openingDepth - c.openingWidth) > 0.001:
                 add("button-opening", f"{c.name} 的圆孔宽度和长度必须等于孔径。", component_id=c.id)
@@ -167,6 +174,9 @@ def validate_design(project: Project) -> list[dict]:
         if gap > 3:
             add("port-reach", f"{p.name} 距侧壁 {gap:.1f} mm，需移动组件到该侧壁附近（不超过 3 mm）。", component_id=c.id)
         along = (c.x if p.edge in ("front", "back") else c.y) + p.offset
+        side_length = e.width if p.edge in ("front", "back") else e.depth
+        if e.cornerRadius and (along - p.width / 2 - e.clearance < e.cornerRadius - 0.001 or along + p.width / 2 + e.clearance > side_length - e.cornerRadius + 0.001):
+            add("port-corner", f"{p.name} 的开孔进入外壳圆角，请移到直壁或减小圆角。", component_id=c.id)
         port_rects.append((p, along - p.width / 2 - e.clearance, along + p.width / 2 + e.clearance, lower_z, upper_z))
         if not p.verified:
             add("port-review", f"{p.name}：开孔宽高、离板高度及插头空间待复核。", "warning", c.id)

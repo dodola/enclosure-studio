@@ -62,7 +62,7 @@ export default function App() {
     let cancelled = false;
     get<Project>('enclosure-project-v1').then(saved => {
       if (!cancelled && saved?.version === 1 && Array.isArray(saved.components) && saved.enclosure && saved.ports) {
-        setProject({ ...saved, components: saved.components.map(c => ({ ...c, mountOffset: c.mountOffset || 0, photos: c.photos || {} })) });
+        setProject({ ...saved, enclosure: { ...saved.enclosure, cornerRadius: saved.enclosure.cornerRadius ?? 0 }, components: saved.components.map(c => ({ ...c, mountOffset: c.mountOffset || 0, photos: c.photos || {} })) });
         setSelected(saved.components[0]?.id || '');
       }
     }).catch(() => { if (!cancelled) setSaveStatus('无法读取本地工作区'); }).finally(() => { if (!cancelled) setLoaded(true); });

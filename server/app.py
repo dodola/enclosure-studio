@@ -107,7 +107,7 @@ def export(project: Project):
         manifest["issues"] = issues
         manifest["units"] = "mm"
         manifest["printOrientation"] = {"base.stl": "底板朝下", "lid.stl": "外表面朝下、定位边朝上"}
-        notes = ["# 壳研 · 打印说明", "", f"项目：{project.name}", "", "所有模型单位为毫米。", "base.stl 底板朝下；lid.stl 已翻转至平面外表面朝下。", "外壳角部为螺丝导孔，不含打印螺纹；请按实际螺丝选用长度。", "当前模型为矩形两片式外壳，未包含线缆、散热器和卡扣。", "请先试打印 mounting-test.stl 验证孔位，再检查接口插拔。", "", "## 待复核事项", ""]
+        notes = ["# 壳研 · 打印说明", "", f"项目：{project.name}", "", "所有模型单位为毫米。", f"外壳竖直四角圆角：R{project.enclosure.cornerRadius:g} mm（0 为直角）；不包含顶面/底面边缘圆角或倒角。", "base.stl 底板朝下；lid.stl 已翻转至平面外表面朝下。", "外壳角部为螺丝导孔，不含打印螺纹；请按实际螺丝选用长度。", "当前模型为两片式外壳，未包含线缆、散热器和卡扣。", "请先试打印 mounting-test.stl 验证孔位，再检查接口插拔。", "", "## 待复核事项", ""]
         notes.extend(f"- {i['message']}" for i in issues)
         if not issues:
             notes.append("- 软件几何检查通过；装配精度仍需实物试装验证。")

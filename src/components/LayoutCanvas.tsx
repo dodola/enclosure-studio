@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { kindColors, cn } from '../lib';
+import { fasteningPoints, kindColors, cn } from '../lib';
 import type { Part, Project } from '../types';
 
 function PartDrawing({ part }: { part: Part }) {
@@ -26,9 +26,9 @@ export default function LayoutCanvas({ project, selected, onSelect, onMove, laye
       <div ref={boardRef} className="plan-body">
         <svg viewBox={`0 0 ${e.width} ${e.depth}`} className="absolute inset-0 size-full" aria-hidden="true">
           <defs><pattern id="plan-grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M 10 0 H 0 V 10" fill="none" stroke="#d6e1e1" strokeWidth=".2" /></pattern></defs>
-          <rect x="0" y="0" width={e.width} height={e.depth} rx="3" fill="#ecf1f0" stroke="#869a97" strokeWidth=".8" />
-          <rect x={e.wall} y={e.wall} width={e.width - 2 * e.wall} height={e.depth - 2 * e.wall} rx="1" fill="url(#plan-grid)" stroke="#a7b5b3" strokeWidth=".5" />
-          {[[6, 6], [e.width - 6, 6], [6, e.depth - 6], [e.width - 6, e.depth - 6]].map(([x, y], i) => <g key={i}><circle cx={x} cy={y} r="4" fill="#d3ddda" stroke="#a5b4b0" strokeWidth=".4" /><circle cx={x} cy={y} r={e.screwDiameter / 2} fill="#f8fafc" /></g>)}
+          <rect x="0" y="0" width={e.width} height={e.depth} rx={e.cornerRadius} fill="#ecf1f0" stroke="#869a97" strokeWidth=".8" />
+          <rect x={e.wall} y={e.wall} width={e.width - 2 * e.wall} height={e.depth - 2 * e.wall} rx={Math.max(0, e.cornerRadius - e.wall)} fill="url(#plan-grid)" stroke="#a7b5b3" strokeWidth=".5" />
+          {fasteningPoints(e).map(([x, y], i) => <g key={i}><circle cx={x} cy={y} r="4" fill="#d3ddda" stroke="#a5b4b0" strokeWidth=".4" /><circle cx={x} cy={y} r={e.screwDiameter / 2} fill="#f8fafc" /></g>)}
         </svg>
         {project.components.filter(c => layer === 'all' || c.mount === layer).map(c => <button key={c.id} type="button" aria-label={`选择 ${c.name}，位置 X ${c.x.toFixed(1)} Y ${c.y.toFixed(1)} 毫米`} title={`${c.name} · ${c.width} × ${c.depth} mm`}
           className={cn('plan-part', selected === c.id && 'plan-part-selected')}

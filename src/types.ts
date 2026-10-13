@@ -21,7 +21,7 @@ export interface Port {
 export interface Enclosure {
   width: number; depth: number; height: number; wall: number; floor: number; lid: number;
   clearance: number; standoffDiameter: number; screwDiameter: number;
-  pilotDiameter: number; lipHeight: number; ventilation: boolean;
+  pilotDiameter: number; lipHeight: number; cornerRadius: number; ventilation: boolean;
 }
 export interface Project { version: 1; name: string; components: Part[]; ports: Port[]; enclosure: Enclosure }
 export interface Issue { code: string; message: string; severity: 'error' | 'warning'; componentId?: string }

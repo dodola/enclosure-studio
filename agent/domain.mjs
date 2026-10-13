@@ -15,6 +15,7 @@ const partFields = { name: text, kind, width: number, depth: number, height: num
   holes: Type.Array(hole, { maxItems: 40 }) };
 const portFields = { name: text, componentId: text, edge, offset: number, width: number, height: number, z: number };
 const shellFields = Object.fromEntries(['width', 'depth', 'height', 'wall', 'floor', 'lid', 'clearance', 'standoffDiameter', 'screwDiameter', 'pilotDiameter', 'lipHeight'].map(k => [k, number]));
+shellFields.cornerRadius = Type.Number({ minimum: 0, maximum: 225, description: '外壳沿高度方向的四角半径(mm)，0为直角，不超过min(width,depth)/2；内腔、定位边和角部螺丝柱自动跟随。' });
 shellFields.ventilation = Type.Boolean();
 
 export const editSchema = object({
@@ -43,7 +44,7 @@ export const annotationSchema = object({
 });
 
 export function stripPhotos(project) {
-  return { ...project, components: project.components.map(({ photos: _photos, ...c }) => c) };
+  return { ...project, enclosure: { ...project.enclosure, cornerRadius: project.enclosure.cornerRadius ?? 0 }, components: project.components.map(({ photos: _photos, ...c }) => c) };
 }
 
 export function applyEdits(project, input) {

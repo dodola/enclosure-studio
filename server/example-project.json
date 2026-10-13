@@ -13,6 +13,7 @@
     "screwDiameter": 3.4,
     "pilotDiameter": 2.6,
     "lipHeight": 2.4,
+    "cornerRadius": 0,
     "ventilation": true
   },
   "components": [

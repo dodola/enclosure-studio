@@ -11,7 +11,7 @@ export function NumberField({ label, value, onChange, min = 0, max = 450, step =
 }) {
   const id = useId();
   return <div className="field"><label htmlFor={id}>{label}</label><div className="number-wrap"><input id={id} type="number" value={value} min={min} max={max} step={step} disabled={disabled}
-    aria-describedby={description ? `${id}-hint` : undefined}
+    aria-describedby={description ? `${id}-hint` : undefined} aria-invalid={value < min || value > max || undefined}
     onChange={e => { const next = e.target.valueAsNumber; if (Number.isFinite(next)) onChange(next); }} onBlur={e => { const n = e.target.valueAsNumber; if (Number.isFinite(n) && (n < min || n > max)) onChange(Math.max(min, Math.min(max, n))); }} /><span>{unit}</span></div>
     {description && <small id={`${id}-hint`}>{description}</small>}</div>;
 }

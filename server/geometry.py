@@ -1,8 +1,9 @@
 """Real boolean solids shared by preview and STL export; no placeholder meshes."""
 import numpy as np
 import trimesh
-from manifold3d import Manifold
+from manifold3d import CrossSection, Manifold
 
+from .footprint import FASTENER_RADIUS, fastening_points, ventilation_positions
 from .models import Project, validate_design
 
 
@@ -12,6 +13,23 @@ def box(x, y, z, width, depth, height):
 
 def cylinder(x, y, z, height, diameter):
     return Manifold.cylinder(float(height), float(diameter) / 2, float(diameter) / 2, 48).translate((float(x), float(y), float(z)))
+
+
+def enclosure_prism(e, inset, z, height):
+    """Extrude the same offset footprint for the outside, cavity and locating lip."""
+    radius = max(0, e.cornerRadius - inset)
+    if not radius:
+        return box(inset, inset, z, e.width - 2 * inset, e.depth - 2 * inset, height)
+    centers = [(e.width - inset - radius, e.depth - inset - radius),
+               (inset + radius, e.depth - inset - radius),
+               (inset + radius, inset + radius),
+               (e.width - inset - radius, inset + radius)]
+    # 64 edges per quadrant: maximum sagitta < 0.017 mm at the largest R225.
+    points = []
+    for quadrant, (cx, cy) in enumerate(centers):
+        angles = np.linspace(quadrant * np.pi / 2, (quadrant + 1) * np.pi / 2, 65)
+        points.extend((cx + radius * np.cos(a), cy + radius * np.sin(a)) for a in angles)
+    return CrossSection([np.asarray(points)]).extrude(float(height)).translate((0, 0, float(z)))
 
 
 def mesh(solid: Manifold) -> trimesh.Trimesh:
@@ -29,18 +47,21 @@ def build(project: Project):
         raise ValueError("；".join(i["message"] for i in errors))
     e = project.enclosure
     cap_z = e.height - e.lid
-    base = box(0, 0, 0, e.width, e.depth, cap_z)
-    base -= box(e.wall, e.wall, e.floor, e.width - 2 * e.wall, e.depth - 2 * e.wall, e.height)
-    lid = box(0, 0, cap_z, e.width, e.depth, e.lid)
-    screw_points = [(6, 6), (e.width - 6, 6), (6, e.depth - 6), (e.width - 6, e.depth - 6)]
+    base = enclosure_prism(e, 0, 0, cap_z)
+    base -= enclosure_prism(e, e.wall, e.floor, e.height)
+    lid = enclosure_prism(e, 0, cap_z, e.lid)
+    screw_points = fastening_points(e.width, e.depth, e.cornerRadius)
     for x, y in screw_points:
-        base += cylinder(x, y, e.floor - 0.1, cap_z - e.floor + 0.1, 8)
+        base += cylinder(x, y, e.floor - 0.1, cap_z - e.floor + 0.1, 2 * FASTENER_RADIUS)
         base -= cylinder(x, y, e.floor + 1, cap_z - e.floor, e.pilotDiameter)
         lid -= cylinder(x, y, cap_z - 0.1, e.lid + 0.2, e.screwDiameter)
     if e.lipHeight:
         inset = e.wall + e.clearance
-        lip = box(inset, inset, cap_z - e.lipHeight, e.width - 2 * inset, e.depth - 2 * inset, e.lipHeight + 0.1)
-        lip -= box(inset + 1.2, inset + 1.2, cap_z - e.lipHeight - 0.1, e.width - 2 * (inset + 1.2), e.depth - 2 * (inset + 1.2), e.lipHeight + 0.3)
+        lip = enclosure_prism(e, inset, cap_z - e.lipHeight, e.lipHeight + 0.1)
+        lip -= enclosure_prism(e, inset + 1.2, cap_z - e.lipHeight - 0.1, e.lipHeight + 0.3)
+        # The locating ring must clear the bosses when the lid is assembled.
+        for x, y in screw_points:
+            lip -= cylinder(x, y, cap_z - e.lipHeight - 0.1, e.lipHeight + 0.3, 2 * (FASTENER_RADIUS + e.clearance))
         lid += lip
     for c in project.components:
         for h in c.holes:
@@ -77,7 +98,7 @@ def build(project: Project):
             cutter = box(x, c.y + p.offset - w / 2, z, e.wall + 1, w, h)
         base -= cutter
     if e.ventilation:
-        for x in np.linspace(e.width * 0.27, e.width * 0.73, 9):
+        for x in ventilation_positions(e.width, e.cornerRadius):
             base -= box(float(x) - 1.25, -0.5, max(e.floor + 3, cap_z * 0.3), 2.5, e.wall + 1, min(12, cap_z * 0.4))
     return mesh(base), mesh(lid), issues
 
