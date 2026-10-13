@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Sparkles, Square, Check, ScanLine } from 'lucide-react';
 import type { AIAnnotation, AIFeature, Part, Photo, PhotoSlot, Port } from '../types';
 import { AIModelSelect, AISetup, imageDataUrl, useAI } from '../ai';
-import { responseError, uid } from '../lib';
+import { faceDimensions, imagePointToPanel, imageRectToPanel, isSideMount, responseError, uid } from '../lib';
 import { Badge, Note, NumberField } from './ui';
 
 const labels = { hole: '安装孔候选', opening: '面板开口', connector: '接口', obstruction: '突出 / 遮挡' };
@@ -11,17 +11,18 @@ export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpd
   onPhotoUpdate: (photo: Photo) => void; onApply: (patch: Partial<Part>, ports: Port[]) => void;
 }) {
   const ai = useAI();
+  const { u: planeWidth, v: planeDepth, thickness } = faceDimensions(part);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [chosen, setChosen] = useState<string[]>([]);
   const [result, setResult] = useState<AIAnnotation | undefined>(photo.ai), [notice, setNotice] = useState('');
   const [portDetails, setPortDetails] = useState<Record<string, { edge?: Port['edge']; offset?: number; width?: number; height?: number; z?: number }>>({});
   const aborter = useRef<AbortController | null>(null), autoDone = useRef(0);
-  const analysis = photo.analysis?.width === part.width && photo.analysis.depth === part.depth ? photo.analysis : undefined;
+  const analysis = photo.analysis?.width === planeWidth && photo.analysis.depth === planeDepth ? photo.analysis : undefined;
   const calibrated = Boolean(analysis && ['top', 'bottom'].includes(slot));
   const image = calibrated ? analysis!.rectifiedImage : photo.dataUrl;
-  const sourceKey = JSON.stringify([image, part.width, part.depth, slot]);
+  const sourceKey = JSON.stringify([image, planeWidth, planeDepth, part.mount, slot]);
   const latest = useRef(sourceKey); latest.current = sourceKey;
   const previous = useRef(sourceKey);
-  const validResult = result && result.width === part.width && result.depth === part.depth && result.calibrated === calibrated ? result : undefined;
+  const validResult = result && result.width === planeWidth && result.depth === planeDepth && result.calibrated === calibrated ? result : undefined;
   useEffect(() => {
     if (previous.current !== sourceKey) { aborter.current?.abort(); setResult(photo.ai); setChosen([]); setPortDetails({}); setNotice(''); previous.current = sourceKey; }
   }, [sourceKey, photo.ai]);
@@ -32,7 +33,7 @@ export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpd
     setBusy(true); setError(''); setNotice(''); setChosen([]); setPortDetails({});
     try {
       const response = await fetch('/api/ai/annotate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-        body: JSON.stringify({ image: await imageDataUrl(image), width: part.width, depth: part.depth, height: part.height, dimensionsVerified: part.verified, kind: part.kind, slot, calibrated,
+        body: JSON.stringify({ image: await imageDataUrl(image), width: planeWidth, depth: planeDepth, height: thickness, mount: part.mount, dimensionsVerified: part.verified, kind: part.kind, slot, calibrated,
           hints: calibrated ? analysis?.holes.map(h => ({ x: h.x, y: h.y, diameter: h.diameter })) : [], provider: model.provider, model: model.id }) });
       if (!response.ok) throw new Error(await responseError(response));
       const next: AIAnnotation = await response.json();
@@ -49,21 +50,21 @@ export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpd
     const bbox = [...f.bbox]; bbox[index] = value / 100;
     bbox[2] = Math.min(bbox[2], 1 - bbox[0]); bbox[3] = Math.min(bbox[3], 1 - bbox[1]);
     const [x, y, w, h] = bbox, round = (n: number) => +n.toFixed(2);
-    const measurement = calibrated ? { x: round(x * part.width), y: round(y * part.depth), width: round(w * part.width), depth: round(h * part.depth),
-      ...(f.kind === 'hole' ? { x: round((x + w / 2) * part.width), y: round((y + h / 2) * part.depth), diameter: round(Math.min(w * part.width, h * part.depth)) } : {}) } : undefined;
+    const measurement = calibrated ? { x: round(x * planeWidth), y: round(y * planeDepth), width: round(w * planeWidth), depth: round(h * planeDepth),
+      ...(f.kind === 'hole' ? { x: round((x + w / 2) * planeWidth), y: round((y + h / 2) * planeDepth), diameter: round(Math.min(w * planeWidth, h * planeDepth)) } : {}) } : undefined;
     editFeature(f.id, { bbox, measurement });
   };
   const editMeasurement = (f: AIFeature, field: string, value: number) => {
     if (!f.measurement) return;
     const m = { ...f.measurement, [field]: value };
     const bbox = f.kind === 'hole'
-      ? [(m.x - (m.diameter || 0) / 2) / part.width, (m.y - (m.diameter || 0) / 2) / part.depth, (m.diameter || 0) / part.width, (m.diameter || 0) / part.depth]
-      : [m.x / part.width, m.y / part.depth, m.width / part.width, m.depth / part.depth];
+      ? [(m.x - (m.diameter || 0) / 2) / planeWidth, (m.y - (m.diameter || 0) / 2) / planeDepth, (m.diameter || 0) / planeWidth, (m.diameter || 0) / planeDepth]
+      : [m.x / planeWidth, m.y / planeDepth, m.width / planeWidth, m.depth / planeDepth];
     editFeature(f.id, { measurement: m, bbox });
   };
   const detailsFor = (f: AIFeature) => {
     const m = f.measurement;
-    return { edge: f.edge, ...(m && f.edge ? { offset: f.edge === 'front' || f.edge === 'back' ? m.x + m.width / 2 : m.y + m.depth / 2,
+    return { edge: f.edge, ...(m && f.edge && !isSideMount(part.mount) ? { offset: f.edge === 'front' || f.edge === 'back' ? m.x + m.width / 2 : m.y + m.depth / 2,
       width: f.edge === 'front' || f.edge === 'back' ? m.width : m.depth } : {}), ...portDetails[f.id] };
   };
   const apply = () => {
@@ -78,14 +79,16 @@ export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpd
         const m = f.measurement;
         if (!f.label.trim()) throw new Error('标注名称不能为空。');
         if (f.kind === 'hole') {
-          if (!m?.diameter || m.diameter > 20 || m.x < 0 || m.x > part.width || m.y < 0 || m.y > part.depth) throw new Error('请校准图片并修正孔中心与孔径（0–20 mm）。');
-          if (!holes.some(h => Math.hypot(h.x - m.x, h.y - m.y) < 1)) holes.push({ id: uid(), x: m.x, y: m.y, diameter: m.diameter, source: `pi:${validResult.provider}/${validResult.model}`, verified: false });
+          if (!m?.diameter || m.diameter > 20 || m.x < 0 || m.x > planeWidth || m.y < 0 || m.y > planeDepth) throw new Error('请校准图片并修正孔中心与孔径（0–20 mm）。');
+          const point = imagePointToPanel(part, m.x, m.y);
+          if (!holes.some(h => Math.hypot(h.x - point.x, h.y - point.y) < 1)) holes.push({ id: uid(), ...point, diameter: m.diameter, source: `pi:${validResult.provider}/${validResult.model}`, verified: false });
         }
         if (f.kind === 'opening') {
-          if (!m || part.kind === 'board') throw new Error('开发板不能直接采用面板开口；屏幕和键盘需先校准照片。');
-          if (part.kind === 'button') { const diameter = Math.min(m.width, m.depth); patch.openingWidth = diameter; patch.openingDepth = diameter; patch.openingX = m.x + (m.width - diameter) / 2; patch.openingY = m.y + (m.depth - diameter) / 2; }
-          else { patch.openingWidth = m.width; patch.openingDepth = m.depth; patch.openingX = m.x; patch.openingY = m.y; }
-          if (!patch.openingWidth || !patch.openingDepth || patch.openingX! < 0 || patch.openingY! < 0 || patch.openingX! + patch.openingWidth > part.width || patch.openingY! + patch.openingDepth > part.depth) throw new Error('开口范围必须位于组件内且尺寸大于零。');
+          if (!m || part.mount === 'base') throw new Error('底壳内部组件不能直接采用面板开口；面板照片需先校准。');
+          if (part.openingShape === 'circle') { const diameter = Math.min(m.width, m.depth); patch.openingWidth = diameter; patch.openingDepth = diameter; patch.openingX = m.x + (m.width - diameter) / 2; patch.openingY = m.y + (m.depth - diameter) / 2; }
+          else { patch.openingShape = part.openingShape === 'none' ? 'rect' : part.openingShape; patch.openingWidth = m.width; patch.openingDepth = m.depth; patch.openingX = m.x; patch.openingY = m.y; }
+          const rect = imageRectToPanel(part, patch.openingX!, patch.openingY!, patch.openingWidth!, patch.openingDepth!); patch.openingY = rect.y;
+          if (!patch.openingWidth || !patch.openingDepth || patch.openingX! < 0 || patch.openingY! < 0 || patch.openingX! + patch.openingWidth > planeWidth || patch.openingY! + patch.openingDepth > planeDepth) throw new Error('开口范围必须位于组件内且尺寸大于零。');
         }
         if (f.kind === 'connector') {
           const p = detailsFor(f);
@@ -113,7 +116,7 @@ export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpd
         {!calibrated && <Note>当前框选坐标尚未转换为毫米。安装孔及面板开口需先校准，再重新标注。侧面接口的高度和离板高度需手动补充。</Note>}
         {slot === 'bottom' && <Note warning>背面图片坐标可能与正面镜像。采用孔位前，需确保校准四角对应正面的 X/Y 方向。</Note>}
         <div className="ai-features">{validResult.features.map((f, index) => {
-          const m = f.measurement, p = detailsFor(f), disabled = f.kind === 'obstruction' || (!calibrated && f.kind !== 'connector') || (f.kind === 'opening' && part.kind === 'board');
+          const m = f.measurement, p = detailsFor(f), disabled = f.kind === 'obstruction' || (!calibrated && f.kind !== 'connector') || (f.kind === 'opening' && part.mount === 'base');
           return <details className="ai-feature" key={f.id}><summary><span className="ai-feature-index">{index + 1}</span><strong>{f.label}</strong><span>{Math.round(f.confidence * 100)}%</span><small>{labels[f.kind]}</small></summary>
             <div className="space-y-3 p-3"><label className="ai-feature-choice"><input type="checkbox" checked={chosen.includes(f.id)} disabled={disabled} onChange={e => setChosen(current => e.target.checked ? [...current, f.id] : current.filter(id => id !== f.id))} />{disabled ? '参考标注，当前不能采用' : '采用此候选'}</label>
               <label className="ai-text-field">标注名称<input value={f.label} maxLength={120} onChange={e => editFeature(f.id, { label: e.target.value })} /></label>

@@ -1,4 +1,6 @@
-export type Kind = 'board' | 'screen' | 'keyboard' | 'button';
+export type Kind = 'board' | 'screen' | 'keyboard' | 'button' | 'switch' | 'encoder' | 'battery' | 'speaker' | 'module';
+export type Mount = 'base' | 'lid' | 'front' | 'back' | 'left' | 'right';
+export type OpeningShape = 'none' | 'rect' | 'circle' | 'roundedRect';
 export type Step = 'components' | 'photos' | 'layout' | 'shell' | 'export' | 'agent';
 export type PhotoSlot = 'top' | 'bottom' | 'front' | 'side';
 export interface Hole { id: string; x: number; y: number; diameter: number; source: string; verified: boolean }
@@ -9,9 +11,10 @@ export interface Analysis {
 export interface Photo { name: string; dataUrl: string; corners?: number[][]; analysis?: Analysis; ai?: AIAnnotation }
 export interface Part {
   id: string; kind: Kind; name: string; width: number; depth: number; height: number;
-  x: number; y: number; z: number; mount: 'base' | 'lid';
+  x: number; y: number; z: number; mount: Mount;
   mountOffset: number;
   openingWidth: number; openingDepth: number; openingX?: number | null; openingY?: number | null; holes: Hole[]; verified: boolean;
+  openingShape: OpeningShape; openingRadius: number;
   photos: Partial<Record<PhotoSlot, Photo>>;
 }
 export interface Port {
@@ -22,6 +25,7 @@ export interface Enclosure {
   width: number; depth: number; height: number; wall: number; floor: number; lid: number;
   clearance: number; standoffDiameter: number; screwDiameter: number;
   pilotDiameter: number; lipHeight: number; cornerRadius: number; ventilation: boolean;
+  screwHeadDiameter: number; screwHeadDepth: number;
 }
 export interface Project { version: 1; name: string; components: Part[]; ports: Port[]; enclosure: Enclosure }
 export interface Issue { code: string; message: string; severity: 'error' | 'warning'; componentId?: string }

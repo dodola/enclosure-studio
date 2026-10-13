@@ -90,7 +90,7 @@ export function createHandler({ context, sessionFactory = createSession, geometr
           execute: async (_id, args) => { annotations = normaliseAnnotations(args, { ...body, calibrated }); return { content: [{ type: 'text', text: '标注候选已保存。请简短说明待复核项。' }], details: {} }; } };
         session = await sessionFactory(context, model, [tool], annotationPrompt);
         const hints = Array.isArray(body.hints) ? body.hints.slice(0, 40) : [];
-        await session.prompt(`请预标注此图片。数据：${JSON.stringify({ kind: body.kind, slot: body.slot, width: body.width, depth: body.depth, height: body.height, dimensionsVerified: body.dimensionsVerified === true, calibrated, cvHoleCandidates: hints })}`, { images: [image], expandPromptTemplates: false });
+        await session.prompt(`请预标注此图片。数据：${JSON.stringify({ kind: body.kind, mount: body.mount, slot: body.slot, width: body.width, depth: body.depth, height: body.height, dimensionsVerified: body.dimensionsVerified === true, calibrated, cvHoleCandidates: hints })}`, { images: [image], expandPromptTemplates: false });
         assertFinished(session);
         if (controller.signal.aborted) throw failure('AI 标注已停止或超时。', 408);
         if (!annotations) throw failure('模型未提交有效标注，请重试或更换模型。', 502);

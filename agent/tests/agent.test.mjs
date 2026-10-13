@@ -9,6 +9,7 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { applyEdits, createDesignTools, normaliseAnnotations, stripPhotos } from '../domain.mjs';
 import { createHandler, parseImage } from '../server.mjs';
 import { createSession } from '../pi.mjs';
+import { changeMount, createComponent, faceDimensions, imagePointToPanel, imageRectToPanel, normaliseProject, resizeEnclosure, templates } from '../../shared/design.mjs';
 
 const project = JSON.parse(await readFile(new URL('../../server/example-project.json', import.meta.url), 'utf8'));
 const listen = async server => { await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); return `http://127.0.0.1:${server.address().port}`; };
@@ -93,11 +94,10 @@ async function fixture(t, replies, geometry = fakeGeometry) {
 const post = (url, path, body, signal) => fetch(url + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'fixture', model: 'fixture', ...body }), signal });
 const events = async response => (await response.text()).trim().split('\n').map(line => JSON.parse(line));
 
-test('real Pi SDK sets corner radius using real geometry and rejects excessive rounding atomically', async t => {
+const realGeometry = async (path, value, signal) => {
   const python = fileURLToPath(new URL('../../.venv/bin/python', import.meta.url));
   const cwd = fileURLToPath(new URL('../../', import.meta.url));
   const run = promisify(execFile);
-  const geometry = async (path, value) => {
     const script = `import json, sys
 from fastapi.testclient import TestClient
 from server.app import app
@@ -107,15 +107,17 @@ data = r.json()
 if sys.argv[1].endswith('preview'):
     data = {part: {'watertight': data[part]['watertight']} for part in ['base', 'lid']}
 print(json.dumps(data))`;
-    const { stdout } = await run(python, ['-c', script, path, JSON.stringify(value)], { cwd });
+    const { stdout } = await run(python, ['-c', script, path, JSON.stringify(value)], { cwd, signal });
     return JSON.parse(stdout);
-  };
+};
+
+test('real Pi SDK sets corner radius using real geometry and rejects excessive rounding atomically', async t => {
   const f = await fixture(t, [
     { tool: 'inspect_design' },
     { tool: 'edit_design', args: { reason: '尝试过大圆角', enclosure: { cornerRadius: 64 } } },
     { tool: 'edit_design', args: { reason: '四角改为R12', enclosure: { cornerRadius: 12 } } },
     { text: '已将四角设为 R12，几何检查通过。' },
-  ], geometry);
+  ], realGeometry);
   const stream = await events(await post(f.url, '/api/ai/chat', { project, message: '外壳四角改成R12，其他尺寸保留' }));
   const done = stream.find(e => e.type === 'done');
   assert.equal(done.project.enclosure.cornerRadius, 12);
@@ -125,6 +127,53 @@ print(json.dumps(data))`;
   assert.ok(stream.some(e => e.type === 'tool' && e.status === 'rejected'));
   assert.throws(() => applyEdits(project, { reason: '负数圆角', enclosure: { cornerRadius: -1 } }));
   assert.throws(() => applyEdits(project, { reason: '不支持的倒角', enclosure: { chamfer: 2 } }));
+});
+
+test('real Pi SDK adds side panels and edits apertures and screw recesses with real geometry', async t => {
+  const f = await fixture(t, [
+    { tool: 'inspect_design' }, { tool: 'list_component_templates' },
+    { tool: 'add_component', args: { templateId: 'button', reason: '添加左侧示例按钮', mount: 'left', faceWidth: 16, faceHeight: 16, thickness: 12, y: 100, z: 12 } },
+    { tool: 'add_component', args: { templateId: 'switch', reason: '添加右侧示例开关', mount: 'right', y: 90, z: 12 } },
+    { tool: 'edit_design', args: { reason: '圆角过大且沉孔过深', enclosure: { screwHeadDepth: 2 }, components: [{ id: 'display', patch: { openingShape: 'roundedRect', openingRadius: 20 } }] } },
+    { tool: 'edit_design', args: { reason: '设置屏幕圆角开口和上盖沉孔', enclosure: { screwHeadDepth: 1, screwHeadDiameter: 6.4 }, components: [{ id: 'display', patch: { openingShape: 'roundedRect', openingRadius: 3 } }] } },
+    { text: '已添加左侧按钮和右侧开关示例，屏幕开孔 R3，开启 1 mm 平底沉孔；尺寸待实测。' },
+  ], realGeometry);
+  const stream = await events(await post(f.url, '/api/ai/chat', { project, message: '用示例尺寸添加左侧按钮、右侧开关，将屏幕开孔改为R3圆角矩形，并为上盖螺丝头添加沉孔' }));
+  const done = stream.find(e => e.type === 'done');
+  assert.ok(done, JSON.stringify(stream.at(-1)));
+  assert.equal(done.project.components.length, project.components.length + 2);
+  assert.equal(done.project.components.at(-2).mount, 'left');
+  assert.equal(done.project.components.at(-1).openingShape, 'roundedRect');
+  assert.equal(done.project.enclosure.screwHeadDepth, 1);
+  assert.equal(done.project.components.find(c => c.id === 'display').openingShape, 'roundedRect');
+  assert.equal(done.project.components.find(c => c.id === 'display').openingRadius, 3);
+  assert.equal(done.changes.length, 3);
+  assert.equal(stream.filter(e => e.type === 'tool' && e.status === 'rejected').length, 1);
+  assert.ok(f.requests.some(body => body.messages.some(m => m.role === 'tool' && m.content.includes('沉孔') && m.content.includes('圆角'))));
+  for (const c of done.project.components.slice(-2)) assert.equal(c.verified, false);
+  assert.deepEqual(done.project.components.slice(0, project.components.length).filter(c => c.id !== 'display'), stripPhotos(project).components.filter(c => c.id !== 'display'));
+  const { openingShape: _shape, openingRadius: _radius, verified: _verified, ...display } = done.project.components.find(c => c.id === 'display');
+  const { openingShape: _oldShape, openingRadius: _oldRadius, verified: _oldVerified, ...originalDisplay } = stripPhotos(project).components.find(c => c.id === 'display');
+  assert.deepEqual(display, originalDisplay);
+  assert.ok(f.requests.some(body => body.messages.some(m => m.role === 'tool' && m.content.includes('"id":"battery"'))));
+});
+
+test('shared placement preserves face measurements, anchors side panels on resize, and converts image coordinates', () => {
+  const initial = normaliseProject(project);
+  assert.equal(initial.enclosure.screwHeadDepth, 0);
+  assert.equal(initial.components[0].openingShape, 'none');
+  assert.equal(templates.length, 9);
+  const c = createComponent('button', initial, { id: 'side-button', mount: 'left' });
+  c.holes = [{ id: 'known', x: 3, y: 13, diameter: 3.5, verified: true }];
+  const moved = { ...c, ...changeMount(c, 'front', initial.enclosure) };
+  assert.deepEqual(faceDimensions(moved), faceDimensions(c));
+  assert.deepEqual(moved.holes, c.holes);
+  const enlarged = resizeEnclosure({ ...initial, components: [moved] }, { width: 150, depth: 200, height: 45 });
+  assert.equal(enlarged.components[0].y - moved.y, 200 - initial.enclosure.depth);
+  assert.equal(enlarged.components[0].z, moved.z);
+  assert.deepEqual(imagePointToPanel(c, 3, 3), { x: 3, y: 13 });
+  assert.deepEqual(imageRectToPanel(c, 4, 2, 5, 4), { x: 4, y: 10, width: 5, height: 4 });
+  assert.deepEqual(imagePointToPanel(initial.components[0], 3, 3), { x: 3, y: 3 });
 });
 
 test('real Pi SDK streams tool calls, repairs a rejected edit, and keeps follow-up context current', async t => {

@@ -1,20 +1,27 @@
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import { Check } from 'typebox/value';
+import { autoLayoutProject, createComponent, normaliseProject, resizeEnclosure, templates } from '../shared/design.mjs';
 
 const object = properties => Type.Object(properties, { additionalProperties: false });
 const number = Type.Number({ minimum: 0, maximum: 500 });
 const text = Type.String({ minLength: 1, maxLength: 120 });
 const optional = properties => Object.fromEntries(Object.entries(properties).map(([k, v]) => [k, Type.Optional(v)]));
 const edge = Type.Union(['front', 'back', 'left', 'right'].map(Type.Literal));
-const kind = Type.Union(['board', 'screen', 'keyboard', 'button'].map(Type.Literal));
+const kind = Type.Union(templates.map(t => Type.Literal(t.id)));
+const mount = Type.Union(['base', 'lid', 'front', 'back', 'left', 'right'].map(Type.Literal));
+const openingShape = Type.Union(['none', 'rect', 'circle', 'roundedRect'].map(Type.Literal));
+const position = Type.Number({ minimum: -20, maximum: 500 });
 const hole = object({ x: number, y: number, diameter: Type.Number({ exclusiveMinimum: 0, maximum: 20 }) });
-const partFields = { name: text, kind, width: number, depth: number, height: number, x: number, y: number, z: number,
-  mount: Type.Union([Type.Literal('base'), Type.Literal('lid')]), mountOffset: number,
+const partFields = { name: text, kind, width: number, depth: number, height: number, x: position, y: position, z: number,
+  mount, mountOffset: number,
   openingWidth: number, openingDepth: number, openingX: number, openingY: number,
+  openingShape: Type.Optional(openingShape), openingRadius: Type.Optional(number),
   holes: Type.Array(hole, { maxItems: 40 }) };
 const portFields = { name: text, componentId: text, edge, offset: number, width: number, height: number, z: number };
 const shellFields = Object.fromEntries(['width', 'depth', 'height', 'wall', 'floor', 'lid', 'clearance', 'standoffDiameter', 'screwDiameter', 'pilotDiameter', 'lipHeight'].map(k => [k, number]));
+shellFields.screwHeadDiameter = Type.Number({ minimum: 2, maximum: 7.2 });
+shellFields.screwHeadDepth = Type.Number({ minimum: 0, maximum: 5.4, description: '四角上盖螺孔的平底沉孔深度，0关闭；须留至少0.6mm盖板厚度。' });
 shellFields.cornerRadius = Type.Number({ minimum: 0, maximum: 225, description: '外壳沿高度方向的四角半径(mm)，0为直角，不超过min(width,depth)/2；内腔、定位边和角部螺丝柱自动跟随。' });
 shellFields.ventilation = Type.Boolean();
 
@@ -44,21 +51,20 @@ export const annotationSchema = object({
 });
 
 export function stripPhotos(project) {
-  return { ...project, enclosure: { ...project.enclosure, cornerRadius: project.enclosure.cornerRadius ?? 0 }, components: project.components.map(({ photos: _photos, ...c }) => c) };
+  const next = normaliseProject(project);
+  return { ...next, components: next.components.map(({ photos: _photos, ...c }) => c) };
 }
 
 export function applyEdits(project, input) {
   if (!Check(editSchema, input)) throw new Error('工具参数不符合设计字段约束。');
-  const next = structuredClone(project);
+  let next = structuredClone(stripPhotos(project));
   const find = (items, id) => { const item = items.find(c => c.id === id); if (!item) throw new Error(`不存在的 ID：${id}`); return item; };
   if (input.enclosure) {
-    const dz = (input.enclosure.height ?? next.enclosure.height) - next.enclosure.height;
-    Object.assign(next.enclosure, input.enclosure);
-    next.components.filter(c => c.mount === 'lid').forEach(c => { c.z = +(c.z + dz).toFixed(3); });
+    next = resizeEnclosure(next, input.enclosure);
   }
   for (const { id, patch } of input.components ?? []) {
     const c = find(next.components, id);
-    const measured = ['kind', 'width', 'depth', 'height', 'mount', 'mountOffset', 'openingWidth', 'openingDepth', 'openingX', 'openingY', 'holes'].some(k => k in patch);
+    const measured = ['kind', 'width', 'depth', 'height', 'mount', 'mountOffset', 'openingWidth', 'openingDepth', 'openingX', 'openingY', 'openingShape', 'openingRadius', 'holes'].some(k => k in patch);
     Object.assign(c, patch);
     if (patch.holes) c.holes = patch.holes.map(h => ({ ...h, id: randomUUID(), source: 'pi-agent', verified: false }));
     if (measured) c.verified = false;
@@ -72,21 +78,10 @@ export function applyEdits(project, input) {
     next.ports = next.ports.filter(p => p.componentId !== id);
   }
   for (const id of input.removePortIds ?? []) { find(next.ports, id); next.ports = next.ports.filter(p => p.id !== id); }
-  return next;
+  return stripPhotos(next);
 }
 
-export function autoLayout(project) {
-  const next = structuredClone(project), e = next.enclosure;
-  const base = next.components.filter(c => c.mount === 'base'), top = next.components.filter(c => c.mount === 'lid');
-  const baseWidth = base.reduce((sum, c) => sum + c.width + 12, 12);
-  e.width = Math.min(450, Math.max(e.width, baseWidth, ...top.map(c => c.width + 24)));
-  e.depth = Math.min(450, Math.max(e.depth, top.reduce((sum, c) => sum + c.depth + 14, 12), ...base.map(c => c.depth + 28)));
-  e.height = Math.min(180, Math.max(e.height, ...base.map(c => c.height + Math.max(0, ...top.map(c => c.height)) + 14)));
-  let bx = (e.width - baseWidth + 24) / 2, ty = 12;
-  base.forEach(c => { c.x = bx; c.y = e.depth - e.wall - e.clearance - c.depth; c.z = e.floor + 4.6; bx += c.width + 12; });
-  top.forEach(c => { c.x = (e.width - c.width) / 2; c.y = ty; c.z = e.height + (['keyboard', 'button'].includes(c.kind) ? 1 : 0) - c.height; ty += c.depth + 14; });
-  return next;
-}
+export const autoLayout = autoLayoutProject;
 
 export function normaliseAnnotations(input, context) {
   if (!Check(annotationSchema, input)) throw new Error('AI 标注格式无效，请重新标注。');
@@ -122,5 +117,15 @@ export function createDesignTools(state, geometry) {
       execute: async (_id, args, signal) => stage(applyEdits(state.project, args), args.reason, signal) },
     { name: 'auto_layout', label: '自动排布组件', description: '按底壳/上盖分层保守排布并扩大外壳，几何检查通过后应用。', parameters: object({}), executionMode: 'sequential',
       execute: async (_id, _args, signal) => stage(autoLayout(state.project), '自动排布组件并适配外壳', signal) },
+    { name: 'list_component_templates', label: '查看组件库', description: '列出组件模板、默认安装面和示例尺寸。所有模板均待实测，不含完整实物固定结构。', parameters: object({}),
+      execute: async () => result({ templates, note: 'u/v为局部安装面尺寸，thickness为法向厚度。模板尺寸为示例，用户提供实测值时优先采用。' }) },
+    { name: 'add_component', label: '添加组件', description: '从组件库添加待复核组件，支持底壳、上盖或四个侧壁。faceWidth/faceHeight是局部U/V外形，thickness为法向总厚度；缺省采用明确标记的示例尺寸。x/y/z为外壳全局位置。添加后须通过几何检查；自带螺母、卡扣和电池托架不会生成。',
+      parameters: object({ templateId: kind, reason: text, ...optional({ mount, name: text, faceWidth: number, faceHeight: number, thickness: number, x: position, y: position, z: number }) }), executionMode: 'sequential',
+      execute: async (_id, args, signal) => {
+        const { templateId, reason, ...options } = args;
+        const next = structuredClone(state.project);
+        next.components.push(createComponent(templateId, next, { ...options, id: randomUUID() }));
+        return stage(stripPhotos(next), reason, signal);
+      } },
   ];
 }

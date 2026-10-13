@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { MeshData, Preview, Project } from '../types';
-import { kindColors } from '../lib';
+import { faceDimensions, isSideMount, kindColors } from '../lib';
 
 export default function Scene3D({ project, preview, exploded, showParts, selected, cameraKey }: { project: Project; preview: Preview; exploded: boolean; showParts: boolean; selected: string; cameraKey: number }) {
   const host = useRef<HTMLDivElement>(null);
@@ -59,7 +59,7 @@ export default function Scene3D({ project, preview, exploded, showParts, selecte
     if (showParts) for (const c of project.components) {
       const z = c.z + (c.mount === 'lid' ? lift : 0);
       const boardMaterial = makeMaterial(kindColors[c.kind]);
-      if (c.kind === 'board') {
+      if (c.kind === 'board' && !isSideMount(c.mount)) {
         const pcbZ = z + c.mountOffset;
         const pcbThickness = Math.min(1.6, Math.max(.2, c.height - c.mountOffset));
         addBox(c.x, c.y, pcbZ, c.width, c.depth, pcbThickness, boardMaterial);
@@ -76,19 +76,26 @@ export default function Scene3D({ project, preview, exploded, showParts, selecte
           if (p.edge === 'left') addBox(c.x, c.y + p.offset - p.width / 2, z + p.z, 10, p.width, p.height, metallic);
           if (p.edge === 'right') addBox(c.x + c.width - 10, c.y + p.offset - p.width / 2, z + p.z, 10, p.width, p.height, metallic);
         }
-      } else if (c.kind === 'screen') {
+      } else if (c.kind === 'screen' && !isSideMount(c.mount)) {
         const bodyHeight = Math.max(.5, c.height - c.mountOffset);
         addBox(c.x, c.y, z, c.width, c.depth, bodyHeight, boardMaterial);
         addBox(c.x + (c.openingX ?? (c.width - c.openingWidth) / 2), c.y + (c.openingY ?? (c.depth - c.openingDepth) / 2), z + bodyHeight, c.openingWidth, c.openingDepth, Math.max(.5, c.mountOffset), makeMaterial('#14232d', .22));
-      } else if (c.kind === 'keyboard') {
+      } else if (c.kind === 'keyboard' && !isSideMount(c.mount)) {
         const bodyHeight = Math.max(.5, c.height - c.mountOffset);
         addBox(c.x, c.y, z, c.width, c.depth, bodyHeight, boardMaterial);
         const keyMaterial = makeMaterial('#d6dedf');
         for (let i = 0; i < 12; i++) addBox(c.x + (c.openingX ?? (c.width - c.openingWidth) / 2) + i % 4 * c.openingWidth / 4 + .8, c.y + (c.openingY ?? (c.depth - c.openingDepth) / 2) + Math.floor(i / 4) * c.openingDepth / 3 + .8, z + bodyHeight, c.openingWidth / 4 - 1.6, c.openingDepth / 3 - 1.6, Math.max(.5, c.mountOffset), keyMaterial);
+      } else if (['button', 'encoder', 'speaker'].includes(c.kind)) {
+        const face = faceDimensions(c);
+        const object = new THREE.Mesh(new THREE.CylinderGeometry(Math.min(face.u, face.v) / 2, Math.min(face.u, face.v) / 2, face.thickness, 32), boardMaterial);
+        if (['front', 'back'].includes(c.mount)) object.rotation.x = Math.PI / 2;
+        if (['left', 'right'].includes(c.mount)) object.rotation.z = Math.PI / 2;
+        object.position.set(c.x + c.width / 2 - e.width / 2, z + c.height / 2, c.y + c.depth / 2 - e.depth / 2);
+        object.castShadow = true; scene.add(object);
       } else {
-        const object = new THREE.Mesh(new THREE.CylinderGeometry(c.openingWidth / 2, c.openingWidth / 2, c.height, 32), boardMaterial);
-        object.position.set(c.x + (c.openingX ?? (c.width - c.openingWidth) / 2) + c.openingWidth / 2 - e.width / 2, z + c.height / 2, c.y + (c.openingY ?? (c.depth - c.openingDepth) / 2) + c.openingDepth / 2 - e.depth / 2); object.castShadow = true; scene.add(object);
+        addBox(c.x, c.y, z, c.width, c.depth, c.height, boardMaterial);
       }
+
       if (c.id === selected && exploded) {
         const outline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(c.width + 1, c.height + 1, c.depth + 1)), new THREE.LineBasicMaterial({ color: '#0f766e', transparent: true, opacity: .6 }));
         outline.position.set(c.x + c.width / 2 - e.width / 2, z + c.height / 2, c.y + c.depth / 2 - e.depth / 2); scene.add(outline);

@@ -99,15 +99,26 @@ def export(project: Project):
         base, lid, issues = build(project)
         csv_buffer = io.StringIO()
         writer = csv.writer(csv_buffer)
-        writer.writerow(["component", "feature", "x_mm", "y_mm", "diameter_mm", "source", "verified"])
+        writer.writerow(["component", "feature", "mount", "u_mm", "v_mm", "diameter_mm", "source", "verified"])
         for c in project.components:
             for h in c.holes:
-                writer.writerow([c.name, h.id, h.x, h.y, h.diameter, h.source, h.verified])
+                writer.writerow([c.name, h.id, c.mount, h.x, h.y, h.diameter, h.source, h.verified])
         manifest = project.model_dump()
         manifest["issues"] = issues
         manifest["units"] = "mm"
         manifest["printOrientation"] = {"base.stl": "底板朝下", "lid.stl": "外表面朝下、定位边朝上"}
-        notes = ["# 壳研 · 打印说明", "", f"项目：{project.name}", "", "所有模型单位为毫米。", f"外壳竖直四角圆角：R{project.enclosure.cornerRadius:g} mm（0 为直角）；不包含顶面/底面边缘圆角或倒角。", "base.stl 底板朝下；lid.stl 已翻转至平面外表面朝下。", "外壳角部为螺丝导孔，不含打印螺纹；请按实际螺丝选用长度。", "当前模型为两片式外壳，未包含线缆、散热器和卡扣。", "请先试打印 mounting-test.stl 验证孔位，再检查接口插拔。", "", "## 待复核事项", ""]
+        notes = [
+            "# 壳研 · 打印说明", "", f"项目：{project.name}", "", "所有模型单位为毫米。",
+            f"外壳竖直四角圆角：R{project.enclosure.cornerRadius:g} mm（0 为直角）；不包含顶面/底面边缘圆角或倒角。",
+            "base.stl 底板朝下；lid.stl 已翻转至平面外表面朝下。",
+            "外壳角部为螺丝导孔，不含打印螺纹；请按实际螺丝选用长度。",
+            "当前模型为两片式外壳，未包含线缆、散热器和卡扣。",
+            "如包含 mounting-test.stl，请先试打印验证孔位，再检查接口插拔。", "",
+            "measurements.csv 的 mount 表示安装面；孔位采用局部 U/V：底壳及上盖 X/Y，前后侧 X/Z，左右侧 Y/Z，侧面 V 向上。",
+            f"四角上盖螺丝头平底沉孔：直径 {project.enclosure.screwHeadDiameter:g} mm，深度 {project.enclosure.screwHeadDepth:g} mm（深度 0 关闭）。",
+            "电池与无孔内部模块仅提供占位；按钮、开关及旋钮的螺母或卡扣固定须实物复核，扬声器未包含防护网。", "",
+            "## 待复核事项", "",
+        ]
         notes.extend(f"- {i['message']}" for i in issues)
         if not issues:
             notes.append("- 软件几何检查通过；装配精度仍需实物试装验证。")

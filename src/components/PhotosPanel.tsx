@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { Camera, Upload, ScanLine, MousePointer2, Check, Plus, Ruler, Image as ImageIcon } from 'lucide-react';
-import { cn, compressPhoto, photoNames, responseError, uid } from '../lib';
+import { faceDimensions, imagePointToPanel, imageRectToPanel, isSideMount, cn, compressPhoto, photoNames, responseError, uid } from '../lib';
 import type { Analysis, Part, Photo, PhotoSlot, Port } from '../types';
 import { Badge, Note, NumberField } from './ui';
 import AIAnnotator from './AIAnnotator';
@@ -14,6 +14,7 @@ export const photoGuide = [
 ];
 
 export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { part: Part; onUpdate: (patch: Partial<Part>) => void; onAIApply: (patch: Partial<Part>, ports: Port[]) => void; onGuide: () => void }) {
+  const { u: planeWidth, v: planeDepth } = faceDimensions(part);
   const [slot, setSlot] = useState<PhotoSlot>('top');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -26,7 +27,7 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
   const img = useRef<HTMLImageElement>(null);
   const photo = part.photos[slot];
   const isPlane = slot === 'top' || slot === 'bottom';
-  const analysis = photo?.analysis && photo.analysis.width === part.width && photo.analysis.depth === part.depth ? photo.analysis : undefined;
+  const analysis = photo?.analysis && photo.analysis.width === planeWidth && photo.analysis.depth === planeDepth ? photo.analysis : undefined;
   const showRectified = Boolean(analysis && mode !== 'corners');
   const changeSlot = (value: PhotoSlot) => { setSlot(value); setError(''); setMode('view'); setChosen([]); setPoints([]); setOpeningStart(null); setAIRequest(0); };
   const savePhoto = (value: Photo) => onUpdate({ photos: { ...part.photos, [slot]: value } });
@@ -42,7 +43,7 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
     setBusy(true); setError('');
     try {
       const data = new FormData();
-      data.append('image', await (await fetch(photo.dataUrl)).blob(), 'component.jpg'); data.append('width', String(part.width)); data.append('depth', String(part.depth));
+      data.append('image', await (await fetch(photo.dataUrl)).blob(), 'component.jpg'); data.append('width', String(planeWidth)); data.append('depth', String(planeDepth));
       const corners = mode === 'corners' ? points : photo.corners;
       if (corners?.length === 4) data.append('corners', JSON.stringify(corners));
       const response = await fetch('/api/analyze', { method: 'POST', body: data });
@@ -58,17 +59,17 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
     const point = [Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))];
     if (mode === 'corners') setPoints(current => current.length < 4 ? [...current, point] : [point]);
     if (mode === 'hole') {
-      onUpdate({ verified: false, holes: [...part.holes, { id: uid(), x: +(point[0] * part.width).toFixed(2), y: +(point[1] * part.depth).toFixed(2), diameter: 3.5, source: 'image', verified: false }] });
+      onUpdate({ verified: false, holes: [...part.holes, { id: uid(), ...imagePointToPanel(part, +(point[0] * planeWidth).toFixed(2), +(point[1] * planeDepth).toFixed(2)), diameter: 3.5, source: 'image', verified: false }] });
       setMode('view');
     }
     if (mode === 'opening') {
       if (!openingStart) setOpeningStart(point);
-      else { onUpdate({ openingWidth: Math.max(1, +(Math.abs(point[0] - openingStart[0]) * part.width).toFixed(1)), openingDepth: Math.max(1, +(Math.abs(point[1] - openingStart[1]) * part.depth).toFixed(1)), openingX: +(Math.min(point[0], openingStart[0]) * part.width).toFixed(1), openingY: +(Math.min(point[1], openingStart[1]) * part.depth).toFixed(1), verified: false }); setOpeningStart(null); setMode('view'); }
+      else { const panelRect = imageRectToPanel(part, Math.min(point[0], openingStart[0]) * planeWidth, Math.min(point[1], openingStart[1]) * planeDepth, Math.abs(point[0] - openingStart[0]) * planeWidth, Math.abs(point[1] - openingStart[1]) * planeDepth); onUpdate({ openingWidth: Math.max(1, +(Math.abs(point[0] - openingStart[0]) * planeWidth).toFixed(1)), openingDepth: Math.max(1, +(Math.abs(point[1] - openingStart[1]) * planeDepth).toFixed(1)), openingX: +(Math.min(point[0], openingStart[0]) * planeWidth).toFixed(1), openingY: +panelRect.y.toFixed(1), verified: false }); setOpeningStart(null); setMode('view'); }
     }
   };
   const applyHoles = () => {
     if (!analysis) return;
-    onUpdate({ holes: analysis.holes.filter(h => chosen.includes(h.id)).map(h => ({ ...h, id: uid(), verified: false })), verified: false }); setChosen([]);
+    onUpdate({ holes: analysis.holes.filter(h => chosen.includes(h.id)).map(h => ({ ...h, ...imagePointToPanel(part, h.x, h.y), id: uid(), verified: false })), verified: false }); setChosen([]);
   };
   return <div className="photo-page">
     <div className="page-title-row"><div><span className="eyebrow">PHOTO & MEASURE</span><h1>让照片成为尺寸依据</h1><p>为「{part.name}」补充视角，再校准平面尺寸。</p></div><button className="button" onClick={onGuide}><Camera size={16} />拍照要求</button></div>
@@ -77,6 +78,7 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
         <span className="photo-slot-icon">{part.photos[g.slot] ? <Check size={17} /> : <Camera size={17} />}</span><span><strong>{g.title}</strong><small>{part.photos[g.slot] ? '已上传' : (g.slot === 'front' && part.kind !== 'board' ? '按需补充' : '建议上传')}</small></span>{part.photos[g.slot] && <span className="slot-dot" />}
       </button>)}
     </div>
+    {isSideMount(part.mount) && <Note>正面 / 背面照片需正对安装面，横向对应 U。图片坐标从左上计；采用孔位和开口时，V 自动转换为从底部向上。背面横向方向仍需核对。</Note>}
     <label className="ai-auto-label"><input type="checkbox" checked={autoAI} onChange={e => setAutoAI(e.target.checked)} />上传或校准后自动 AI 预标注（配置视觉模型后发送当前图片）</label>
     <div className="photo-editor card">
       <div className="card-header"><div className="flex items-center gap-2"><ImageIcon size={16} /><strong>{photoNames[slot]}</strong>{analysis && <Badge tone="success">已校准</Badge>}</div><button className="button button-small" onClick={() => input.current?.click()} disabled={busy}><Upload size={14} />{photo ? '替换图片' : '上传图片'}</button></div>
@@ -86,7 +88,7 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
           <img ref={img} src={showRectified ? analysis?.rectifiedImage : photo.dataUrl} alt={`${part.name}的${photoNames[slot]}照片`} />
           <svg className="photo-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
             {mode === 'corners' && <><polygon points={points.map(p => `${p[0] * 100},${p[1] * 100}`).join(' ')} fill="#0f766e" fillOpacity=".12" stroke="#0f766e" strokeWidth=".5" />{points.map((p, i) => <g key={i}><circle cx={p[0] * 100} cy={p[1] * 100} r="1.4" fill="#0f766e" stroke="white" strokeWidth=".3" /><text x={p[0] * 100 + 2} y={p[1] * 100 + 1} fontSize="3" fill="#0f766e">{i + 1}</text></g>)}</>}
-            {showRectified && analysis?.holes.map((h, i) => <g key={h.id}><circle cx={h.x / part.width * 100} cy={h.y / part.depth * 100} r={h.diameter / part.width * 50} fill={chosen.includes(h.id) ? '#0f766e' : 'none'} fillOpacity=".3" stroke={chosen.includes(h.id) ? '#0f766e' : '#b7791f'} strokeWidth=".45" /><text x={h.x / part.width * 100 + 2.2} y={h.y / part.depth * 100 + 1} fill="#0f766e" fontSize="2.5">{i + 1}</text></g>)}
+            {showRectified && analysis?.holes.map((h, i) => <g key={h.id}><circle cx={h.x / planeWidth * 100} cy={h.y / planeDepth * 100} r={h.diameter / planeWidth * 50} fill={chosen.includes(h.id) ? '#0f766e' : 'none'} fillOpacity=".3" stroke={chosen.includes(h.id) ? '#0f766e' : '#b7791f'} strokeWidth=".45" /><text x={h.x / planeWidth * 100 + 2.2} y={h.y / planeDepth * 100 + 1} fill="#0f766e" fontSize="2.5">{i + 1}</text></g>)}
             {openingStart && <circle cx={openingStart[0] * 100} cy={openingStart[1] * 100} r="1.4" fill="#0f766e" />}
           </svg>
         </button></div> : <button className="photo-empty" onClick={() => input.current?.click()} disabled={busy}><span className="upload-symbol"><Upload size={24} /></span><strong>上传{photoNames[slot]}照片</strong><span>点击选择或将图片拖到这里</span><small>PNG / JPG / WebP · 最大 12 MB</small></button>}
@@ -103,7 +105,7 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
       {mode === 'hole' && <p className="px-4 pb-3 text-sm text-teal-700">请点击校准图片中的孔中心。默认孔径 3.5 mm，添加后需实测修正。</p>}
       <div className="card-footer"><span className="text-xs text-slate-500">坐标原点：组件左上角</span><button className="button button-primary button-small" disabled={!chosen.length} onClick={applyHoles}>采用 {chosen.length} 个孔位</button></div>
     </div>}
-    {analysis && part.kind !== 'board' && part.kind !== 'button' && <button className="button w-full" onClick={() => { setMode(mode === 'opening' ? 'view' : 'opening'); setOpeningStart(null); }}><Ruler size={16} />{mode === 'opening' ? '点击显示区或键盘区的两个对角' : '在校准图片中框选上盖开口'}</button>}
+    {analysis && part.mount !== 'base' && part.openingShape !== 'none' && part.openingShape !== 'circle' && <button className="button w-full" onClick={() => { setMode(mode === 'opening' ? 'view' : 'opening'); setOpeningStart(null); }}><Ruler size={16} />{mode === 'opening' ? '点击显示区或键盘区的两个对角' : '在校准图片中框选面板开口'}</button>}
     <div className="photo-tip"><Camera size={18} /><div><strong>{photoGuide.find(g => g.slot === slot)?.detail}</strong><p>{photoGuide.find(g => g.slot === slot)?.hint}</p></div></div>
   </div>;
 }

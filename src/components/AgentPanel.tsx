@@ -6,7 +6,7 @@ import { cn, geometryPayload } from '../lib';
 import { Badge, Note } from './ui';
 
 interface Message { id: string; role: 'user' | 'assistant'; text: string; tools?: { id: string; name: string; status: string }[]; changes?: string[]; applied?: boolean; notice?: string }
-const toolNames: Record<string, string> = { inspect_design: '检查当前设计', edit_design: '修改设计参数', auto_layout: '自动排布组件' };
+const toolNames: Record<string, string> = { inspect_design: '检查当前设计', edit_design: '修改设计参数', auto_layout: '自动排布组件', list_component_templates: '查看组件库', add_component: '添加组件' };
 export default function AgentPanel({ project, selectedId, onApply, onUndo, canUndo }: {
   project: Project; selectedId?: string; onApply: (next: Project, base: Project) => boolean; onUndo: () => void; canUndo: boolean;
 }) {

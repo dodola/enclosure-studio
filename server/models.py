@@ -1,9 +1,10 @@
 """Millimetres throughout. Positions refer to the enclosure's outer lower-left corner."""
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .footprint import FASTENER_RADIUS, fastening_points, footprint_distance, rectangle_fits, ventilation_positions
+from .footprint import FASTENER_RADIUS, fastening_points, footprint_distance, rectangle_fits
+from .panels import SIDE_FACES, boxes_overlap, face_box, face_dimensions, hole_center, mounting_plane, opening_bounds, side_wall_span, support_span, ventilation_slots
 
 
 class Hole(BaseModel):
@@ -17,22 +18,33 @@ class Hole(BaseModel):
 
 class Component(BaseModel):
     id: str = Field(max_length=100)
-    kind: Literal["board", "screen", "keyboard", "button"]
+    kind: Literal["board", "screen", "keyboard", "button", "switch", "encoder", "battery", "speaker", "module"]
     name: str = Field(max_length=120)
     width: float = Field(ge=3, le=400)
     depth: float = Field(ge=3, le=400)
     height: float = Field(ge=0.5, le=150)
-    x: float = Field(ge=0, le=500)
-    y: float = Field(ge=0, le=500)
+    x: float = Field(ge=-20, le=500)
+    y: float = Field(ge=-20, le=500)
     z: float = Field(ge=0, le=200)
-    mount: Literal["base", "lid"] = "base"
+    mount: Literal["base", "lid", "front", "back", "left", "right"] = "base"
     mountOffset: float = Field(ge=0, le=100, default=0)
     openingWidth: float = Field(ge=0, le=400, default=0)
     openingDepth: float = Field(ge=0, le=400, default=0)
     openingX: float | None = Field(ge=0, le=400, default=None)
     openingY: float | None = Field(ge=0, le=400, default=None)
+    openingShape: Literal["none", "rect", "circle", "roundedRect"] = "none"
+    openingRadius: float = Field(ge=0, le=200, default=0)
     holes: list[Hole] = Field(default_factory=list, max_length=40)
     verified: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_opening(cls, value):
+        if isinstance(value, dict) and "openingShape" not in value:
+            kind = value.get("kind")
+            shape = "circle" if kind in ("button", "encoder", "speaker") else "none" if kind in ("board", "battery", "module") else "rect"
+            return {**value, "openingShape": shape}
+        return value
 
 
 class Port(BaseModel):
@@ -60,6 +72,8 @@ class Enclosure(BaseModel):
     pilotDiameter: float = Field(ge=1.5, le=4)
     lipHeight: float = Field(ge=0, le=5)
     cornerRadius: float = Field(ge=0, le=225, default=0)
+    screwHeadDiameter: float = Field(ge=2, le=7.2, default=6.4)
+    screwHeadDepth: float = Field(ge=0, le=5.4, default=0)
     ventilation: bool = True
 
 
@@ -91,23 +105,49 @@ def validate_design(project: Project) -> list[dict]:
         add("pilot", "螺丝导孔应小于上盖螺丝通孔。")
     if e.standoffDiameter <= e.screwDiameter + 1.2:
         add("boss", "支撑柱外径太小，请为螺孔保留至少 0.6 mm 壁厚。")
+    if e.screwHeadDepth and (e.screwHeadDiameter < e.screwDiameter + .4 or e.screwHeadDepth > e.lid - .6):
+        add("screw-head", "螺丝头沉孔须比通孔至少宽 0.4 mm，且上盖剩余厚度至少为 0.6 mm。")
     if e.cornerRadius > min(e.width, e.depth) / 2:
         add("corner-radius", "外壳四角半径不能超过宽度与长度中较小值的一半。")
-    if e.ventilation and len(ventilation_positions(e.width, e.cornerRadius)) < 9:
-        add("ventilation-corners", "圆角占用了部分后侧直壁；仅在剩余直壁生成通风孔。", "warning")
+    if e.ventilation and len(ventilation_slots(project)) < 9:
+        add("ventilation-corners", f"避开圆角和后侧开孔后生成 {len(ventilation_slots(project))} / 9 个通风孔。", "warning")
     screw_points = fastening_points(e.width, e.depth, e.cornerRadius)
     openings = []
+    supports = []
     for c in project.components:
-        if not rectangle_fits(c.x, c.y, c.width, c.depth, e.width, e.depth, e.cornerRadius, e.wall + e.clearance):
+        side = c.mount in SIDE_FACES
+        # The actuator may cross its own wall; only its inner portion occupies the cavity.
+        ix, iy, iw, id = c.x, c.y, c.width, c.depth
+        if c.mount == "front":
+            id = min(c.y + c.depth, e.depth - e.wall - e.clearance) - c.y
+        elif c.mount == "back":
+            iy = max(c.y, e.wall + e.clearance)
+            id = c.y + c.depth - iy
+        elif c.mount == "right":
+            iw = min(c.x + c.width, e.width - e.wall - e.clearance) - c.x
+        elif c.mount == "left":
+            ix = max(c.x, e.wall + e.clearance)
+            iw = c.x + c.width - ix
+        if iw <= 0 or id <= 0 or not rectangle_fits(ix, iy, iw, id, e.width, e.depth, e.cornerRadius, e.wall + e.clearance):
             add("bounds", f"{c.name} 超出内腔或装配间隙（含四角圆弧），请调整位置、减小圆角或扩大外壳。", component_id=c.id)
-        mount_plane = c.z + c.height - c.mountOffset
-        panel = c.mount == "lid" and c.kind != "board"
+        mount_plane = mounting_plane(c)
+        panel = c.mount == "lid" and c.openingShape != "none"
         if c.z < e.floor - 0.001 or (not panel and c.z + c.height > e.height - e.lid + 0.001) or (panel and (mount_plane > e.height - e.lid + 0.001 or c.z + c.height > e.height + 20)):
             add("vertical", f"{c.name} 的高度与底板或上盖相交。", component_id=c.id)
         if panel and c.z + c.height < e.height - 0.001:
             add("panel-recess", f"{c.name} 的操作表面低于上盖外表面，请核对底面 Z 与安装基准。", "warning", c.id)
-        if c.mountOffset > c.height:
+        fu, fv, thickness = face_dimensions(c)
+        if c.mountOffset > thickness:
             add("mount-offset", f"{c.name} 的安装基准偏移不能超过组件总高。", component_id=c.id)
+        if side:
+            start, end = support_span(c, e)
+            outer_projection = {"front": c.y + c.depth - e.depth, "back": -c.y, "left": -c.x, "right": c.x + c.width - e.width}[c.mount]
+            if start > end + .001 or outer_projection > 20 or outer_projection < -.001:
+                add("side-plane", f"{c.name} 的操作面须到达所选外壁，安装基准须位于内壁以内，外露不超过 20 mm。", component_id=c.id)
+            if c.z < e.floor + e.clearance or c.z + c.height > e.height - e.lid - e.lipHeight - e.clearance:
+                add("side-height", f"{c.name} 须避开底板与上盖定位边，请调整 Z 或加高外壳。", component_id=c.id)
+            if c.openingShape == "none":
+                add("side-opening", f"{c.name} 安装在侧壁时必须设置面板开口。", component_id=c.id)
         for sx, sy in screw_points:
             nearest_x = min(max(sx, c.x), c.x + c.width)
             nearest_y = min(max(sy, c.y), c.y + c.depth)
@@ -116,44 +156,66 @@ def validate_design(project: Project) -> list[dict]:
                 break
         for hole in c.holes:
             r = e.standoffDiameter / 2
-            if hole.x > c.width or hole.y > c.depth:
+            if hole.x > fu or hole.y > fv:
                 add("hole", f"{c.name} 的安装孔不在组件范围内。", component_id=c.id)
             if hole.diameter <= e.pilotDiameter:
                 add("hole-screw", f"{c.name} 的安装孔小于支撑柱导孔，请核对孔径。", component_id=c.id)
-            if footprint_distance(c.x + hole.x, c.y + hole.y, e.width, e.depth, e.cornerRadius, e.wall) + r > 0.001:
+            hu, hv = hole_center(c, hole)
+            if side:
+                extent = e.depth if c.mount in ("left", "right") else e.width
+                if hu - r < max(e.wall, e.cornerRadius) or hu + r > extent - max(e.wall, e.cornerRadius) or hv - r < e.floor or hv + r > e.height - e.lid - e.lipHeight:
+                    add("hole-wall", f"{c.name} 的侧壁支撑柱进入圆角、底板或定位边。", component_id=c.id)
+            elif footprint_distance(hu, hv, e.width, e.depth, e.cornerRadius, e.wall) + r > 0.001:
                 add("hole-wall", f"{c.name} 的支撑柱与侧壁或内腔圆角相交，请增加边距。", component_id=c.id)
-        if c.mount == "lid" and c.kind != "board":
-            if c.kind == "button" and abs(c.openingDepth - c.openingWidth) > 0.001:
+            start, end = support_span(c, e)
+            if end > start:
+                supports.append((c, face_box(c.mount, hu - r, hv - r, 2 * r, 2 * r, start, end)))
+        if c.mount != "base" and c.openingShape != "none":
+            if c.openingShape == "circle" and abs(c.openingDepth - c.openingWidth) > 0.001:
                 add("button-opening", f"{c.name} 的圆孔宽度和长度必须等于孔径。", component_id=c.id)
-            if not c.openingWidth or not c.openingDepth or c.openingWidth > c.width or c.openingDepth > c.depth:
-                add("opening", f"{c.name} 的上盖开口尺寸须大于零且不超过组件外形。", component_id=c.id)
-            dx = c.openingX if c.openingX is not None else (c.width - c.openingWidth) / 2
-            dy = c.openingY if c.openingY is not None else (c.depth - c.openingDepth) / 2
-            if dx + c.openingWidth > c.width or dy + c.openingDepth > c.depth:
+            if not c.openingWidth or not c.openingDepth or c.openingWidth > fu or c.openingDepth > fv:
+                add("opening", f"{c.name} 的开口尺寸须大于零且不超过安装面外形。", component_id=c.id)
+            if c.openingShape == "roundedRect" and c.openingRadius > min(c.openingWidth, c.openingDepth) / 2:
+                add("opening-radius", f"{c.name} 的开口圆角不能超过开口较短边的一半。", component_id=c.id)
+            dx = c.openingX if c.openingX is not None else (fu - c.openingWidth) / 2
+            dy = c.openingY if c.openingY is not None else (fv - c.openingDepth) / 2
+            if dx + c.openingWidth > fu or dy + c.openingDepth > fv:
                 add("opening-bounds", f"{c.name} 的开口位置超出组件外形。", component_id=c.id)
-            ox, oy = c.x + dx, c.y + dy
-            openings.append((c, ox, oy, c.openingWidth, c.openingDepth))
+            ox, oy, ow, od = opening_bounds(c)
+            openings.append((c, c.mount, ox, oy, ow, od))
+            if side:
+                extent = e.depth if c.mount in ("left", "right") else e.width
+                if ox - e.clearance < max(e.wall, e.cornerRadius) or ox + ow + e.clearance > extent - max(e.wall, e.cornerRadius):
+                    add("opening-corner", f"{c.name} 的侧面开孔进入圆角或相邻侧壁。", component_id=c.id)
             for hole in c.holes:
-                hx, hy = c.x + hole.x, c.y + hole.y
+                hx, hy = hole_center(c, hole)
                 radius = e.standoffDiameter / 2 + e.clearance
                 if ox - radius < hx < ox + c.openingWidth + radius and oy - radius < hy < oy + c.openingDepth + radius:
                     add("hole-opening", f"{c.name} 的支撑柱太靠近上盖开口。", component_id=c.id)
         if not c.verified or any(not h.verified for h in c.holes):
             add("unverified", f"{c.name}：外形、高度或孔位仍待实测复核。", "warning", c.id)
-        if not c.holes and c.kind != "button":
+        if not c.holes and c.kind not in ("button", "switch", "encoder"):
             add("mounting", f"{c.name} 没有安装孔；模型未为它生成支撑柱，请补充固定方式。", "warning", c.id)
-        if c.kind == "button":
-            add("button-mount", f"{c.name} 生成圆形面板开孔；请使用带螺母的面板按钮或自行补充固定结构。", "warning", c.id)
+        if c.kind in ("button", "switch", "encoder"):
+            add("button-mount", f"{c.name} 生成面板开孔；螺母、开关自带卡扣或其他实际固定结构需实物复核。", "warning", c.id)
+        if c.kind == "battery":
+            add("battery-holder", f"{c.name} 当前是内部占位，尚未生成电池托架、绝缘保护或接线空间。", "warning", c.id)
+        if c.kind == "speaker":
+            add("speaker-grille", f"{c.name} 当前生成声孔，尚未生成防护网孔；真实安装孔与网罩需补充。", "warning", c.id)
     for i, a in enumerate(project.components):
         for b in project.components[i + 1:]:
             if (min(a.x + a.width, b.x + b.width) - max(a.x, b.x) > 0.01 and
                 min(a.y + a.depth, b.y + b.depth) - max(a.y, b.y) > 0.01 and
                 min(a.z + a.height, b.z + b.height) - max(a.z, b.z) > 0.01):
                 add("collision", f"{a.name} 与 {b.name} 发生空间碰撞。", component_id=a.id)
-    for i, (a, ax, ay, aw, ad) in enumerate(openings):
-        for b, bx, by, bw, bd in openings[i + 1:]:
+    for owner, support in supports:
+        for other in project.components:
+            if owner.id != other.id and boxes_overlap(support, (other.x, other.y, other.z, other.width, other.depth, other.height)):
+                add("support-collision", f"{owner.name} 的支撑柱与 {other.name} 相交。", component_id=owner.id)
+    for i, (a, face, ax, ay, aw, ad) in enumerate(openings):
+        for b, other_face, bx, by, bw, bd in openings[i + 1:]:
             margin = 2 * e.clearance + e.wall
-            if ax < bx + bw + margin and ax + aw + margin > bx and ay < by + bd + margin and ay + ad + margin > by:
+            if face == other_face and ax < bx + bw + margin and ax + aw + margin > bx and ay < by + bd + margin and ay + ad + margin > by:
                 add("opening-overlap", f"{a.name} 与 {b.name} 的面板开口太近，请保留至少一个壁厚。", component_id=a.id)
     components = {c.id: c for c in project.components}
     port_rects = []
@@ -184,4 +246,20 @@ def validate_design(project: Project) -> list[dict]:
         for b, bl, br, bz, bt in port_rects[i + 1:]:
             if a.edge == b.edge and min(ar, br) - max(al, bl) > 0 and min(at, bt) - max(az, bz) > 0:
                 add("port-overlap", f"{a.name} 与 {b.name} 的开孔重叠，请调整位置、尺寸或间隙。")
+    side_cuts = [(c.name, c.id, face, u - e.clearance, v - e.clearance, w + 2 * e.clearance, h + 2 * e.clearance)
+                 for c, face, u, v, w, h in openings if face in SIDE_FACES]
+    for p, left, right, bottom, top in port_rects:
+        for c, face, u, v, w, h in openings:
+            margin = e.clearance + .8
+            if face == p.edge and left < u + w + margin and right > u - margin and bottom < v + h + margin and top > v - margin:
+                add("panel-port", f"{c.name} 与 {p.name} 的侧面开孔太近，须保留至少 0.8 mm 实体。", component_id=c.id)
+        side_cuts.append((p.name, p.componentId, p.edge, left, bottom, right - left, top - bottom))
+    for name, component_id, face, u, v, w, h in side_cuts:
+        start, end = side_wall_span(face, e)
+        x, y, _, width, depth, _ = face_box(face, u, v, w, h, start, end)
+        for sx, sy in screw_points:
+            nx, ny = min(max(sx, x), x + width), min(max(sy, y), y + depth)
+            if (nx - sx) ** 2 + (ny - sy) ** 2 < FASTENER_RADIUS ** 2:
+                add("opening-fastener", f"{name} 的侧面开孔切到外壳螺丝柱。", component_id=component_id)
+                break
     return issues

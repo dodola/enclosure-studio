@@ -1,0 +1,12 @@
+import type { Enclosure, Kind, Mount, Part, Project, OpeningShape } from '../src/types';
+export const templates: { id: Kind; name: string; description: string; mount: Mount; u: number; v: number; thickness: number; openingShape: OpeningShape; openingWidth: number; openingDepth: number; openingRadius: number }[];
+export const mountNames: Record<Mount, string>;
+export function isSideMount(mount: Mount): boolean;
+export function faceDimensions(part: Part): { u: number; v: number; thickness: number };
+export function imagePointToPanel(part: Part, x: number, y: number): { x: number; y: number };
+export function imageRectToPanel(part: Part, x: number, y: number, width: number, height: number): { x: number; y: number; width: number; height: number };
+export function normaliseProject(project: Project): Project;
+export function changeMount(part: Part, mount: Mount, enclosure: Enclosure): Partial<Part>;
+export function createComponent(templateId: Kind, project: Project, options: Partial<Part> & { id: string; faceWidth?: number; faceHeight?: number; thickness?: number }): Part;
+export function resizeEnclosure(project: Project, patch: Partial<Enclosure>): Project;
+export function autoLayoutProject(project: Project): Project;
