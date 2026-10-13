@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "name": "便携开发终端",
+  "enclosure": {
+    "width": 126,
+    "depth": 168,
+    "height": 38,
+    "wall": 2.4,
+    "floor": 2.4,
+    "lid": 2.4,
+    "clearance": 0.5,
+    "standoffDiameter": 6,
+    "screwDiameter": 3.4,
+    "pilotDiameter": 2.6,
+    "lipHeight": 2.4,
+    "ventilation": true
+  },
+  "components": [
+    {
+      "id": "firefly",
+      "kind": "board",
+      "name": "Firefly 开发板",
+      "width": 81,
+      "depth": 88,
+      "height": 18,
+      "x": 22.5,
+      "y": 77.1,
+      "z": 7,
+      "mount": "base",
+      "mountOffset": 1.5,
+      "openingWidth": 0,
+      "openingDepth": 0,
+      "verified": false,
+      "holes": [
+        {
+          "id": "board-hole-0",
+          "x": 4,
+          "y": 4,
+          "diameter": 3.5,
+          "source": "image",
+          "verified": false
+        },
+        {
+          "id": "board-hole-1",
+          "x": 77.5,
+          "y": 4,
+          "diameter": 3.5,
+          "source": "image",
+          "verified": false
+        },
+        {
+          "id": "board-hole-2",
+          "x": 4,
+          "y": 74,
+          "diameter": 3.5,
+          "source": "image",
+          "verified": false
+        },
+        {
+          "id": "board-hole-3",
+          "x": 77.5,
+          "y": 74,
+          "diameter": 3.5,
+          "source": "image",
+          "verified": false
+        }
+      ],
+      "photos": {
+        "top": {
+          "name": "用户提供的尺寸图.png",
+          "dataUrl": "/samples/firefly-top.png",
+          "corners": [
+            [
+              0.11524434719183078,
+              0.09215536938309216
+            ],
+            [
+              0.787746170678337,
+              0.09215536938309216
+            ],
+            [
+              0.787746170678337,
+              0.8591012947448591
+            ],
+            [
+              0.11524434719183078,
+              0.8591012947448591
+            ]
+          ]
+        },
+        "bottom": {
+          "name": "接口说明中的背面.png",
+          "dataUrl": "/samples/firefly-bottom.png"
+        }
+      }
+    },
+    {
+      "id": "display",
+      "kind": "screen",
+      "name": "4.3 英寸屏幕 · 示例",
+      "width": 80,
+      "depth": 52,
+      "height": 6,
+      "x": 23,
+      "y": 20,
+      "z": 32,
+      "mount": "lid",
+      "mountOffset": 3.4,
+      "openingWidth": 64,
+      "openingDepth": 36,
+      "verified": false,
+      "photos": {},
+      "holes": [
+        {
+          "id": "screen-hole-0",
+          "x": 4,
+          "y": 4,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        },
+        {
+          "id": "screen-hole-1",
+          "x": 76,
+          "y": 4,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        },
+        {
+          "id": "screen-hole-2",
+          "x": 4,
+          "y": 48,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        },
+        {
+          "id": "screen-hole-3",
+          "x": 76,
+          "y": 48,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        }
+      ]
+    },
+    {
+      "id": "keys",
+      "kind": "keyboard",
+      "name": "12 键键盘 · 示例",
+      "width": 72,
+      "depth": 32,
+      "height": 6,
+      "x": 27,
+      "y": 114,
+      "z": 33,
+      "mount": "lid",
+      "mountOffset": 4.4,
+      "openingWidth": 58,
+      "openingDepth": 18,
+      "verified": false,
+      "photos": {},
+      "holes": [
+        {
+          "id": "key-hole-0",
+          "x": 3,
+          "y": 3,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        },
+        {
+          "id": "key-hole-1",
+          "x": 69,
+          "y": 3,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        },
+        {
+          "id": "key-hole-2",
+          "x": 3,
+          "y": 29,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        },
+        {
+          "id": "key-hole-3",
+          "x": 69,
+          "y": 29,
+          "diameter": 3.2,
+          "source": "template",
+          "verified": false
+        }
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "power",
+      "componentId": "firefly",
+      "name": "DC 电源",
+      "edge": "front",
+      "offset": 4.5,
+      "width": 8,
+      "height": 10.5,
+      "z": 1.5,
+      "verified": false
+    },
+    {
+      "id": "ethernet",
+      "componentId": "firefly",
+      "name": "RJ45 网口",
+      "edge": "front",
+      "offset": 19,
+      "width": 16,
+      "height": 13.5,
+      "z": 1.5,
+      "verified": false
+    },
+    {
+      "id": "usb3",
+      "componentId": "firefly",
+      "name": "USB 3.0",
+      "edge": "front",
+      "offset": 36.5,
+      "width": 13.5,
+      "height": 7.5,
+      "z": 3,
+      "verified": false
+    },
+    {
+      "id": "usb2",
+      "componentId": "firefly",
+      "name": "USB 2.0",
+      "edge": "front",
+      "offset": 53.5,
+      "width": 13.5,
+      "height": 7.5,
+      "z": 3,
+      "verified": false
+    },
+    {
+      "id": "usbc",
+      "componentId": "firefly",
+      "name": "USB-C",
+      "edge": "front",
+      "offset": 71,
+      "width": 9.5,
+      "height": 3.5,
+      "z": 2,
+      "verified": false
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+import { Layers, Settings2, Wind, Scan } from 'lucide-react';
+import type { Enclosure } from '../types';
+import { NumberField, Note } from './ui';
+
+export default function ShellSettings({ value: e, onChange }: { value: Enclosure; onChange: (patch: Partial<Enclosure>) => void }) {
+  return <div className="shell-settings">
+    <div className="card"><div className="card-header"><strong><Scan size={16} />外部尺寸</strong><span className="text-xs text-slate-400">矩形外壳</span></div><div className="grid grid-cols-3 gap-3 p-4"><NumberField label="宽度 X" value={e.width} min={30} max={450} onChange={width => onChange({ width })} /><NumberField label="长度 Y" value={e.depth} min={30} max={450} onChange={depth => onChange({ depth })} /><NumberField label="总高度 Z" value={e.height} min={10} max={180} onChange={height => onChange({ height })} /></div></div>
+    <div className="card"><div className="card-header"><strong><Layers size={16} />壁厚与配合</strong></div><div className="grid grid-cols-2 gap-3 p-4"><NumberField label="侧壁厚度" value={e.wall} min={1.2} max={6} onChange={wall => onChange({ wall })} /><NumberField label="底板厚度" value={e.floor} min={1.2} max={6} onChange={floor => onChange({ floor })} /><NumberField label="上盖厚度" value={e.lid} min={1.2} max={6} onChange={lid => onChange({ lid })} /><NumberField label="每侧装配间隙" value={e.clearance} min={.1} max={2} onChange={clearance => onChange({ clearance })} /><NumberField label="定位边高度" value={e.lipHeight} min={0} max={5} onChange={lipHeight => onChange({ lipHeight })} /></div></div>
+    <div className="card"><div className="card-header"><strong><Settings2 size={16} />螺丝与支撑柱</strong></div><div className="grid grid-cols-3 gap-3 p-4"><NumberField label="支撑柱外径" value={e.standoffDiameter} min={4} max={12} onChange={standoffDiameter => onChange({ standoffDiameter })} /><NumberField label="螺丝通孔" value={e.screwDiameter} min={2} max={5} onChange={screwDiameter => onChange({ screwDiameter })} /><NumberField label="螺丝导孔" value={e.pilotDiameter} min={1.5} max={4} onChange={pilotDiameter => onChange({ pilotDiameter })} /></div></div>
+    <div className="card"><div className="card-header"><strong><Wind size={16} />散热开孔</strong><label className="toggle-label"><input type="checkbox" checked={e.ventilation} onChange={event => onChange({ ventilation: event.target.checked })} /><span>后侧通风孔</span></label></div><div className="p-4"><Note>默认尺寸面向 0.4 mm 喷嘴的 FDM 试打印。打印机误差、材料收缩和螺丝规格仍需试装调整；模型未自动加入散热器。</Note></div></div>
+  </div>;
+}
