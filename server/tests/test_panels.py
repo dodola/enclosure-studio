@@ -77,6 +77,7 @@ def test_side_holes_produce_horizontal_supports_and_through_bores(project, face)
     project.components.append(c)
     before, _, _ = build(project)
     c.holes = [Hole(id=f'h{i}', x=u, y=v, diameter=3.5) for i, (u, v) in enumerate([(4, 4), (28, 4), (4, 20), (28, 20)])]
+    c.mountingMethod = 'holes'
     base, lid, _ = build(project)
     # Test the actual annulus inside the cavity; net volume can decrease because
     # the through bore also removes material from the existing side wall.
@@ -167,3 +168,39 @@ def test_export_preserves_new_parameters_and_actual_meshes(project):
         value = trimesh.load(io.BytesIO(archive.read(part + '.stl')), file_type='stl')
         assert value.is_watertight
         assert value.volume == pytest.approx(preview[part]['volume'], abs=.1)
+
+
+def test_lid_screen_without_holes_gets_adhesive_support_ledge(project):
+    screen = Component(id='adhesive-screen', kind='screen', name='无孔屏幕', width=80, depth=50, height=6,
+                       x=23, y=20, z=38, mount='lid', mountOffset=3,
+                       openingShape='rect', openingWidth=64, openingDepth=36)
+    assert screen.mountingMethod == 'adhesive'
+    assert screen.supportEnabled is True
+    project.components = [screen]
+    project.ports = []
+    _, supported_lid, issues = build(project)
+    assert not any(i['severity'] == 'error' for i in issues)
+    assert supported_lid.is_watertight
+    screen.supportEnabled = False
+    _, plain_lid, _ = build(project)
+    assert supported_lid.volume > plain_lid.volume
+
+
+def test_adhesive_support_rejects_overwide_ledge_and_hole_mount_does_not_add_one(project):
+    screen = Component(id='adhesive-screen', kind='screen', name='无孔屏幕', width=80, depth=50, height=6,
+                       x=7, y=20, z=38, mount='lid', mountOffset=3,
+                       openingShape='rect', openingWidth=64, openingDepth=36, openingX=0, supportWidth=20)
+    project.components = [screen]
+    project.ports = []
+    assert any(i['code'] == 'support-bounds' for i in validate_design(project))
+    screen.x = 23
+    screen.openingX = None
+    screen.supportWidth = 3
+    screen.mountingMethod = 'holes'
+    screen.supportEnabled = False
+    _, lid, issues = build(project)
+    assert not any(i['severity'] == 'error' for i in issues)
+    screen.mountingMethod = 'adhesive'
+    screen.supportEnabled = True
+    _, supported, _ = build(project)
+    assert supported.volume > lid.volume

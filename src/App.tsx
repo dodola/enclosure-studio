@@ -2,21 +2,23 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { get, set } from 'idb-keyval';
 import * as Tabs from '@radix-ui/react-tabs';
 import { Box, ChevronRight, Plus, Camera, LayoutGrid, Layers, Download, FolderOpen, HelpCircle, ArrowUpRight, Check, Undo2, Redo2, RotateCcw, Maximize2, Eye, EyeOff, SlidersHorizontal, FileJson, Upload, PackageCheck, AlertTriangle, CircleCheck, Pencil, HardDrive, MousePointer2, MessageSquare } from 'lucide-react';
-import type { Kind, Part, Preview, Project, Step, Issue } from './types';
-import { autoLayout, cn, download, geometryPayload, kindNames, mountNames, newPart, normaliseProject, resizeEnclosure, responseError, sampleProject, templates, validateImport } from './lib';
+import type { Kind, ModuleBuildResult, Part, Preview, Project, Step, Issue } from './types';
+import { autoLayout, cn, download, geometryPayload, kindNames, mountNames, newPart, normaliseProject, patchComponent, resizeEnclosure, responseError, sampleProject, templates, validateImport } from './lib';
 import { Badge, CheckItem, Confirm, Modal, Note } from './components/ui';
 import { Inspector, Issues, partIcons } from './components/Inspector';
 import LayoutCanvas from './components/LayoutCanvas';
 import PhotosPanel, { photoGuide } from './components/PhotosPanel';
 import ShellSettings from './components/ShellSettings';
 import AgentPanel from './components/AgentPanel';
+import KeepoutsPanel from './components/KeepoutsPanel';
+import ModuleModelEditor from './components/ModuleModelEditor';
 import { useAI } from './ai';
 import { LogoutButton } from './auth';
 
 const Scene3D = lazy(() => import('./components/Scene3D'));
 
 const steps: { id: Step; label: string; icon: typeof Box; description: string }[] = [
-  { id: 'components', label: '组件管理', icon: Box, description: '添加板件与面板组件' },
+  { id: 'components', label: '模组管理', icon: Box, description: '浏览与修改模组模型' },
   { id: 'photos', label: '图片与测量', icon: Camera, description: '校准轮廓与孔位' },
   { id: 'layout', label: '布局设计', icon: LayoutGrid, description: '安排每一个组件' },
   { id: 'shell', label: '外壳参数', icon: SlidersHorizontal, description: '设置壁厚与固定方式' },
@@ -28,6 +30,7 @@ export default function App() {
   const ai = useAI();
   const [project, setProject] = useState<Project>(sampleProject);
   const [loaded, setLoaded] = useState(false);
+  const [saveEnabled,setSaveEnabled]=useState(false);
   const [saveStatus, setSaveStatus] = useState('正在打开工作区');
   const [step, setStep] = useState<Step>('layout');
   const [selected, setSelected] = useState('firefly');
@@ -61,27 +64,30 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    get<Project>('enclosure-project-v1').then(saved => {
-      if (!cancelled && saved?.version === 1 && Array.isArray(saved.components) && saved.enclosure && saved.ports) {
-        setProject(normaliseProject(saved));
-        setSelected(saved.components[0]?.id || '');
+    get<Project>('enclosure-project-v1').then(async saved => {
+      if (!cancelled && saved != null) {
+        const accepted=await validateImport(saved);
+        if(cancelled)return;
+        setProject(accepted);
+        setSelected(accepted.components[0]?.id || '');
       }
-    }).catch(() => { if (!cancelled) setSaveStatus('无法读取本地工作区'); }).finally(() => { if (!cancelled) setLoaded(true); });
+      if(!cancelled)setSaveEnabled(true);
+    }).catch(() => { if (!cancelled) setSaveStatus('无法读取工作区，原数据已保留，请导入项目备份'); }).finally(() => { if (!cancelled) setLoaded(true); });
     return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !saveEnabled) return;
     setSaveStatus('正在保存…');
     const timer = setTimeout(() => { set('enclosure-project-v1', project).then(() => setSaveStatus('已保存至本机')).catch(() => setSaveStatus('保存失败，请导出项目备份')); }, 500);
     return () => clearTimeout(timer);
-  }, [project, loaded]);
+  }, [project, loaded, saveEnabled]);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !saveEnabled) return;
     // Preserve the latest edit if session expiry unmounts the workspace before autosave.
     return () => { void set('enclosure-project-v1', projectRef.current).catch(() => {}); };
-  }, [loaded]);
+  }, [loaded,saveEnabled]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -96,7 +102,11 @@ export default function App() {
         setIssues(result.issues);
         if (result.issues.some((i: Issue) => i.severity === 'error')) { setGenerating(false); return; }
         const response = await fetch('/api/preview', options);
-        if (!response.ok) throw new Error(await responseError(response));
+        if (!response.ok) {
+          const message=await responseError(response);
+          if(response.status===422){setIssues([...result.issues,{code:'solid',message,severity:'error'}]);return;}
+          throw new Error(message);
+        }
         const next: Preview = await response.json();
         if (!controller.signal.aborted) { setPreview(next); setIssues(next.issues); }
       } catch (e) {
@@ -107,20 +117,34 @@ export default function App() {
   }, [geometryJson]);
 
   const commit = (update: (value: Project) => Project) => {
+    if (!loaded || !saveEnabled) return;
     const current = projectRef.current;
     const next = update(current);
+    setSaveEnabled(true);
     projectRef.current = next;
     setHistory(past => [...past.slice(-19), current]); setFuture([]); setProject(next);
   };
-  const patchPart = (id: string, patch: Partial<Part>) => commit(p => ({ ...p, components: p.components.map(c => c.id === id ? { ...c, ...patch } : c) }));
+  const patchPart = (id: string, patch: Partial<Part>) => commit(p => patchComponent(p,id,patch));
   const updatePart = (patch: Partial<Part>) => { if (part) patchPart(part.id, patch); };
   const applyAgentProject = (next: Project, base: Project) => {
     if (JSON.stringify(geometryPayload(projectRef.current)) !== JSON.stringify(geometryPayload(base))) return false;
     commit(current => normaliseProject({ ...next, components: next.components.map(c => ({ ...c, photos: current.components.find(original => original.id === c.id)?.photos || {} })) }));
     return true;
   };
-  const undo = () => { const previous = history.at(-1); if (!previous) return; setFuture(current => [projectRef.current, ...current]); projectRef.current = previous; setProject(previous); setHistory(current => current.slice(0, -1)); };
-  const redo = () => { const next = future[0]; if (!next) return; setHistory(current => [...current, projectRef.current]); projectRef.current = next; setProject(next); setFuture(current => current.slice(1)); };
+  const applyModule = (result: ModuleBuildResult, source: Part) => {
+    const current = projectRef.current.components.find(c => c.id === source.id);
+    if (!current || JSON.stringify(current) !== JSON.stringify(source)) return false;
+    const photos = { ...current.photos };
+    for (const [slot, annotation] of Object.entries(result.annotations)) {
+      const key = slot as keyof typeof photos;
+      if (photos[key] && annotation) photos[key] = { ...photos[key]!, ai: annotation };
+    }
+    commit(p => patchComponent(p, source.id, { moduleModel: result.moduleModel, photos, verified: false }));
+    setSelected(source.id); setStep('components');
+    return true;
+  };
+  const undo = () => { const previous = history.at(-1); if (!previous) return; const snapshot=projectRef.current; setFuture(current => [snapshot, ...current]); projectRef.current = previous; setProject(previous); setHistory(current => current.slice(0, -1)); };
+  const redo = () => { const next = future[0]; if (!next) return; const snapshot=projectRef.current; setHistory(current => [...current, snapshot]); projectRef.current = next; setProject(next); setFuture(current => current.slice(1)); };
   const addPart = (kind: Kind) => { const component = newPart(kind, project); commit(p => ({ ...p, components: [...p.components, component] })); setSelected(component.id); setAddOpen(false); setStep('components'); };
   const reset = () => {
     const next = sampleProject();
@@ -142,13 +166,15 @@ export default function App() {
     try {
       if (file.size > 32 * 1024 * 1024) throw new Error('项目文件不能超过 32 MB。');
       const p = await validateImport(JSON.parse(await file.text()));
-      commit(() => p); setSelected(p.components[0]?.id || ''); setProjectOpen(false);
+      if (!saveEnabled) { projectRef.current=p; setProject(p); setSaveEnabled(true); }
+      else commit(() => p);
+      setSelected(p.components[0]?.id || ''); setProjectOpen(false);
     } catch (e) { setImportError(e instanceof Error ? e.message : '项目导入失败。'); }
     finally { if (fileInput.current) fileInput.current.value = ''; }
   };
   const errorCount = issues.filter(i => i.severity === 'error').length;
   const warningCount = issues.length - errorCount;
-  const allReviewed = project.components.length > 0 && project.components.every(c => c.verified && c.holes.every(h => h.verified)) && project.ports.every(p => p.verified);
+  const allReviewed = project.components.length > 0 && project.components.every(c => c.verified && c.holes.every(h => h.verified)) && project.ports.every(p => p.verified) && (project.keepouts || []).every(k=>k.verified);
   const fullScreen = () => { const element = document.getElementById('model-view'); if (document.fullscreenElement) void document.exitFullscreen(); else void element?.requestFullscreen().catch(() => {}); };
 
   const canvas = <div className={cn('model-card card', step === 'shell' && 'model-card-compact')}>
@@ -163,6 +189,7 @@ export default function App() {
     <div className="model-footer"><span><Box size={14} />{project.enclosure.width} × {project.enclosure.depth} × {project.enclosure.height} mm</span><span>{generating ? '更新模型中…' : preview ? <><Check size={13} />封闭实体</> : '待生成'}</span></div>
   </div>;
 
+  if (!loaded || !saveEnabled) return <main className="min-h-screen grid place-items-center p-6"><div className="card max-w-lg p-6" role="status"><h1 className="text-xl font-semibold">{loaded?'工作区恢复失败':'正在恢复本地工作区…'}</h1>{loaded&&<><p className="my-4">{saveStatus}。请恢复服务后重试，或先下载原始数据备份。</p><div className="flex flex-wrap gap-3"><button className="button" onClick={()=>window.location.reload()}>重试恢复</button><button className="button" onClick={()=>void get('enclosure-project-v1').then(saved=>download(new Blob([JSON.stringify(saved,null,2)],{type:'application/json'}),'工作区恢复备份.json'))}>备份原始数据</button><button className="button" onClick={()=>fileInput.current?.click()}>导入有效备份</button><LogoutButton /></div><input ref={fileInput} type="file" accept="application/json,.json" className="sr-only" tabIndex={-1} aria-label="导入恢复备份" onChange={event=>void importProject(event.target.files?.[0])}/>{importError&&<p className="inline-error" role="alert">{importError}</p>}</>}</div></main>;
   return <div className="app-shell">
     <aside className="sidebar"><a className="brand" href="/" aria-label="壳研首页"><span className="brand-mark"><Box size={23} /></span><div><strong>壳研</strong><small>ENCLOSURE STUDIO</small></div></a>
       <div className="sidebar-section-label">工作空间</div><button className="project-selector" onClick={() => { setNameDraft(project.name); setProjectOpen(true); }}><FolderOpen size={17} /><span className="truncate">{project.name}</span><ChevronRight size={14} /></button>
@@ -180,29 +207,30 @@ export default function App() {
           {step === 'layout' ? <>
             <div className="section-title"><h2>设备组件 <span>{project.components.length}</span></h2><div className="flex gap-3"><button className="text-button" onClick={() => commit(autoLayout)} disabled={!project.components.length}><LayoutGrid size={14} />自动排布</button><button className="text-button" onClick={() => setAddOpen(true)}><Plus size={15} />添加组件</button></div></div>
             <div className="part-strips">{project.components.map(c => { const Icon = partIcons[c.kind]; return <button key={c.id} className={cn('part-strip', part?.id === c.id && 'part-strip-selected')} onClick={() => setSelected(c.id)}><span className="part-icon"><Icon size={18} /></span><span className="min-w-0"><strong>{c.name}</strong><small>{c.width} × {c.depth} × {c.height} mm</small></span><span className="strip-layer">{mountNames[c.mount]}</span></button>; })}{!project.components.length && <button className="empty-inline" onClick={() => setAddOpen(true)}><Plus size={18} />添加第一个组件</button>}</div>
-            <div className="workflow-bottom"><div><span className={cn('check-circle', errorCount > 0 && 'check-circle-warning')}>{errorCount ? <AlertTriangle size={17} /> : <Check size={17} />}</span><div><strong>{generating ? '正在检查组件布局' : apiError ? '模型服务需要连接' : errorCount ? `${errorCount} 项布局问题需要调整` : '组件布局几何检查通过'}</strong><p>{generating ? '正在检查最新设计…' : `${warningCount} 项尺寸或固定方式待复核，示例高度和屏幕／键盘尺寸请替换为实测值。`}</p></div></div><button className="button" onClick={() => setStep('shell')}>设置外壳<ChevronRight size={15} /></button></div>
+            <KeepoutsPanel project={project} onChange={keepouts=>commit(p=>({...p,keepouts}))}/><div className="workflow-bottom"><div><span className={cn('check-circle', errorCount > 0 && 'check-circle-warning')}>{errorCount ? <AlertTriangle size={17} /> : <Check size={17} />}</span><div><strong>{generating ? '正在检查组件布局' : apiError ? '模型服务需要连接' : errorCount ? `${errorCount} 项布局问题需要调整` : '组件布局几何检查通过'}</strong><p>{generating ? '正在检查最新设计…' : `${warningCount} 项尺寸或固定方式待复核，示例高度和屏幕／键盘尺寸请替换为实测值。`}</p></div></div><button className="button" onClick={() => setStep('shell')}>设置外壳<ChevronRight size={15} /></button></div>
           </> : <ShellSettings value={project.enclosure} onChange={patch => commit(p => resizeEnclosure(p, patch))} />}
         </>}
         {step === 'components' && <>
-          <div className="page-title-row"><div><span className="eyebrow">DEVICE COMPONENTS</span><h1>从你的设备组件开始。</h1><p>开发板、屏幕与键盘，搭配侧边按钮、开关、旋钮、电池和扬声器。</p></div><button className="button button-primary" onClick={() => setAddOpen(true)}><Plus size={16} />添加组件</button></div>
+          <div className="page-title-row"><div><span className="eyebrow">DEVICE COMPONENTS</span><h1>管理你的模组与模型。</h1><p>选择模组，浏览和编辑 3D 模型；上传完照片后可统一标注生成。</p></div><div className="flex gap-2"><button className="icon-button" aria-label="撤销模组修改" disabled={!history.length} onClick={undo}><Undo2 size={17}/></button><button className="icon-button" aria-label="重做模组修改" disabled={!future.length} onClick={redo}><Redo2 size={17}/></button></div><button className="button button-primary" onClick={() => setAddOpen(true)}><Plus size={16} />添加组件</button></div>
           <div className="component-grid">{project.components.map(c => { const Icon = partIcons[c.kind]; return <article key={c.id} className={cn('component-card card', part?.id === c.id && 'component-card-selected')}><button className="component-card-main" onClick={() => setSelected(c.id)}><div className="component-illustration">{c.id === 'firefly' ? <img src="/samples/firefly-texture.jpg" alt="Firefly 开发板示例" /> : <Icon size={70} strokeWidth={1} />}<Badge>{mountNames[c.mount]}安装</Badge></div><div className="component-card-body"><span className="text-xs text-slate-500">{kindNames[c.kind]}</span><h2>{c.name}</h2><span className="component-dimensions">{c.width} × {c.depth} × {c.height} <small>mm</small></span><div className="flex items-center justify-between"><span className="text-xs text-slate-500">{c.holes.length} 个安装孔 · {Object.keys(c.photos).length} 张图片</span><Badge tone={c.verified ? 'success' : 'warning'}>{c.verified ? '已复核' : '待复核'}</Badge></div></div></button><button className="component-photo-link" onClick={() => { setSelected(c.id); setStep('photos'); }}><Camera size={15} />补充照片与测量<ArrowUpRight size={14} /></button></article>; })}<button className="component-add" onClick={() => setAddOpen(true)}><span><Plus size={24} /></span><strong>添加一个组件</strong><small>板件 / 面板 / 侧边组件 / 内部模块</small></button></div>
+          {part && <ModuleModelEditor key={part.id} part={part} onSave={moduleModel => patchPart(part.id, { moduleModel, verified: false })} onPhotos={() => setStep('photos')} />}
           <Note>内置开发板长宽来自你提供的尺寸图，孔位来自图片估算。开发板高度、接口尺寸及屏幕／键盘数据均为待替换的示例值。</Note>
           <div className="workflow-bottom"><div><Box size={21} /><p>每个组件独立记录照片、尺寸与安装位置。</p></div><button className="button" onClick={() => setStep('photos')} disabled={!project.components.length}>下一步：图片测量<ChevronRight size={15} /></button></div>
         </>}
-        {step === 'photos' && (part ? <PhotosPanel key={part.id} part={part} onUpdate={updatePart} onAIApply={(patch, ports) => { if (projectRef.current.ports.length + ports.length > 50) throw new Error('项目最多支持 50 个接口。'); commit(p => ({ ...p, components: p.components.map(c => c.id === part.id ? { ...c, ...patch } : c), ports: [...p.ports, ...ports] })); }} onGuide={() => setGuideOpen(true)} /> : <div className="empty-page"><Camera size={40} /><h1>先添加要测量的组件</h1><p>为开发板、屏幕或按键建立独立尺寸记录。</p><button className="button button-primary" onClick={() => setAddOpen(true)}><Plus size={16} />添加组件</button></div>)}
+        {step === 'photos' && (part ? <PhotosPanel key={part.id} part={part} onUpdate={updatePart} onBuild={applyModule} onAIApply={(patch, ports) => { if (projectRef.current.ports.length + ports.length > 50) throw new Error('项目最多支持 50 个接口。'); commit(p => ({ ...patchComponent(p,part.id,patch), ports: [...p.ports, ...ports] })); }} onGuide={() => setGuideOpen(true)} /> : <div className="empty-page"><Camera size={40} /><h1>先添加要测量的组件</h1><p>为开发板、屏幕或按键建立独立尺寸记录。</p><button className="button button-primary" onClick={() => setAddOpen(true)}><Plus size={16} />添加组件</button></div>)}
         {step === 'photos' && project.components.length > 1 && <div className="photo-component-switch"><span>切换组件</span>{project.components.map(c => <button key={c.id} className={cn('button button-small', part?.id === c.id && 'button-primary')} onClick={() => setSelected(c.id)}>{c.name}</button>)}</div>}
         {step === 'export' && <>
           <div className="page-title-row"><div><span className="eyebrow">READY TO PRINT</span><h1>让设计变成实物。</h1><p>检查配合尺寸，先试打印，再完成装配。</p></div><Badge tone={errorCount ? 'warning' : 'success'}>{errorCount ? `${errorCount} 项几何错误` : '几何检查通过'}</Badge></div>
           <div className="export-hero card"><div className="export-icon"><PackageCheck size={38} strokeWidth={1.4} /></div><h2>{project.name}</h2><p>{project.enclosure.width} × {project.enclosure.depth} × {project.enclosure.height} mm · 上下两片式</p><div className="export-tags"><Badge>STL · 毫米</Badge><Badge>4 角螺丝固定</Badge><Badge>{project.components.length} 个组件</Badge></div>
             <button className="button button-primary button-large" disabled={!preview || generating || downloading} onClick={() => void exportModel()}><Download size={18} />{downloading ? '正在准备文件…' : warningCount || !allReviewed ? '下载试打印包' : '下载打印包'}</button>
-            <small>{generating ? '正在更新最新参数…' : errorCount ? '修正几何错误后可下载。' : apiError ? '模型服务不可用，暂时无法下载。' : '包含底壳、上盖、孔位小样及尺寸记录。'}</small>
+            <small>{generating ? '正在更新最新参数…' : errorCount ? '修正几何错误后可下载。' : apiError ? '模型服务不可用，暂时无法下载。' : '包含底壳、上盖、独立压条/键帽、孔位小样及装配说明。'}</small>
             {downloaded && <p className="download-success" role="status"><CircleCheck size={15} />打印文件已准备并触发下载。</p>}{downloadError && <p className="inline-error" role="alert">{downloadError}</p>}
           </div>
           <div className="export-grid"><div className="card"><div className="card-header"><strong>打印前检查</strong><Badge tone={allReviewed ? 'success' : 'warning'}>{allReviewed ? '已复核' : '需实测'}</Badge></div><div className="space-y-3 p-5"><CheckItem checked={Boolean(preview && !errorCount)}>组件无空间碰撞，未超出内腔</CheckItem><CheckItem checked={Boolean(preview?.base.watertight && preview?.lid.watertight)}>底壳和上盖均为封闭实体</CheckItem><CheckItem checked={project.components.length > 0 && project.components.every(c => c.verified)}>组件外形、总高与安装基准已复核</CheckItem><CheckItem checked={project.components.every(c => c.holes.every(h => h.verified))}>安装孔位置与孔径已复核</CheckItem><CheckItem checked={project.ports.every(p => p.verified)}>接口开孔高度与插头空间已复核</CheckItem></div></div>
             <div className="card"><div className="card-header"><strong>先做一次小样</strong><Layers size={16} /></div><div className="p-5"><p className="text-sm leading-6 text-slate-500">用 1.4 mm 薄板快速验证开发板安装孔位置，减少整壳试打印的耗时。</p><button className="button mt-5 w-full" disabled={!preview || downloading || !project.components.some(c => c.mount === 'base' && c.holes.length)} onClick={() => void exportModel(true)}><Download size={15} />下载孔位小样 STL</button></div></div></div>
           {warningCount > 0 && <Note warning>当前有 {warningCount} 项待复核记录，下载文件用于试装。屏幕、键盘及未实测尺寸请在右侧属性中核对；确认标记不会代替实际测量。</Note>}
           {errorCount > 0 && <div className="card p-5"><h2 className="mb-3 text-base font-semibold">需要调整</h2><Issues issues={issues.filter(i => i.severity === 'error')} /><button className="button mt-4" onClick={() => { setView('2d'); setStep('layout'); }}>返回布局调整<ChevronRight size={15} /></button></div>}
-          <div className="card file-manifest"><div className="card-header"><strong>打印包内容</strong><span className="text-xs text-slate-400">ZIP</span></div>{[['base.stl', '底壳 · 支撑柱、侧面开孔及通风孔'], ['lid.stl', '上盖 · 面板开口、定位边及螺丝孔'], ...(project.components.some(c => c.mount === 'base' && c.holes.length) ? [['mounting-test.stl', '孔位验证薄板']] : []), ['assembly.json', '模型尺寸、坐标与复核记录'], ['measurements.csv', '安装孔测量数据'], ['README.md', '打印朝向与待复核事项']].map(([name, label]) => <div key={name}><FileJson size={16} /><strong>{name}</strong><span>{label}</span></div>)}</div>
+          <div className="card file-manifest"><div className="card-header"><strong>打印包内容</strong><span className="text-xs text-slate-400">ZIP</span></div>{[['base.stl', '底壳 · 支撑柱、侧面开孔及通风孔'], ['lid.stl', '上盖 · 面板开口、定位边及螺丝孔'], ...(project.components.some(c => c.mount === 'base' && c.holes.length) ? [['mounting-test.stl', '孔位验证薄板']] : []), ...(preview?.extras || []).map(item=>[item.filename,item.name]), ['assembly.json', '模型尺寸、坐标与复核记录'], ['measurements.csv', '安装孔测量数据'], ['README.md', '打印朝向与待复核事项']].map(([name, label]) => <div key={name}><FileJson size={16} /><strong>{name}</strong><span>{label}</span></div>)}</div>
           <button className="button w-full" onClick={() => download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }), `${project.name}-项目.json`)}><FileJson size={16} />保存可重新编辑的项目 JSON（含照片）</button>
         </>}
         {apiError && step !== 'layout' && <p className="inline-error" role="alert">{apiError}</p>}
@@ -227,7 +255,7 @@ export default function App() {
       <div className="project-actions"><button className="button" onClick={() => download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }), `${project.name}-项目.json`)}><Download size={16} />备份项目 JSON</button><button className="button" onClick={() => fileInput.current?.click()}><Upload size={16} />导入项目 JSON</button><button className="button" onClick={() => setResetMode('blank')}><Plus size={16} />新建空白项目</button><button className="button" onClick={() => setResetMode('sample')}><RotateCcw size={16} />载入示例项目</button></div>
       <input ref={fileInput} type="file" accept="application/json,.json" className="sr-only" tabIndex={-1} aria-label="导入项目 JSON" onChange={event => void importProject(event.target.files?.[0])} />{importError && <p className="inline-error" role="alert">{importError}</p>}
     </Modal>
-    <Confirm open={Boolean(deleteTarget)} onOpenChange={open => { if (!open) setDeleteTarget(null); }} title="移除这个组件？" description="组件对应的照片、孔位与接口开孔会一起移除。你可以使用撤销恢复。" action="移除组件" onConfirm={() => { commit(p => ({ ...p, components: p.components.filter(c => c.id !== deleteTarget), ports: p.ports.filter(port => port.componentId !== deleteTarget) })); setDeleteTarget(null); }} />
+    <Confirm open={Boolean(deleteTarget)} onOpenChange={open => { if (!open) setDeleteTarget(null); }} title="移除这个组件？" description="组件对应的照片、孔位与接口开孔会一起移除。你可以使用撤销恢复。" action="移除组件" onConfirm={() => { commit(p => ({ ...p, components: p.components.filter(c => c.id !== deleteTarget), ports: p.ports.filter(port => port.componentId !== deleteTarget), keepouts: (p.keepouts || []).filter(k=>k.componentId!==deleteTarget) })); setDeleteTarget(null); }} />
     <Confirm open={Boolean(resetMode)} onOpenChange={open => { if (!open) setResetMode(null); }} title={resetMode === 'sample' ? '载入示例项目？' : '新建空白项目？'} description="当前工作区将被替换。建议先备份项目 JSON；替换后也可使用撤销恢复。" action="替换工作区" onConfirm={reset} />
   </div>;
 }

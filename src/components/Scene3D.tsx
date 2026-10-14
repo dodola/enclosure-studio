@@ -38,7 +38,7 @@ export default function Scene3D({ project, preview, exploded, showParts, selecte
     const textures: THREE.Texture[] = [];
     const makeMaterial = (color: string, roughness = .6) => { const m = new THREE.MeshStandardMaterial({ color, roughness, metalness: .04 }); materials.push(m); return m; };
     const shellMaterial = makeMaterial('#e3e8e6');
-    const addShell = (data: MeshData, lift = 0) => {
+    const addShell = (data: MeshData, lift = 0, material: THREE.Material = shellMaterial) => {
       const vertices = new Float32Array(data.vertices.length);
       for (let i = 0; i < data.vertices.length; i += 3) { vertices[i] = data.vertices[i] - e.width / 2; vertices[i + 1] = data.vertices[i + 2] + lift; vertices[i + 2] = data.vertices[i + 1] - e.depth / 2; }
       const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
@@ -46,20 +46,29 @@ export default function Scene3D({ project, preview, exploded, showParts, selecte
       const indices = [...data.indices]; for (let i = 0; i < indices.length; i += 3) [indices[i + 1], indices[i + 2]] = [indices[i + 2], indices[i + 1]];
       geometry.setIndex(indices);
       const flatGeometry = geometry.toNonIndexed(); flatGeometry.computeVertexNormals(); geometry.dispose();
-      const object = new THREE.Mesh(flatGeometry, shellMaterial); object.castShadow = true; object.receiveShadow = true; scene.add(object);
+      const object = new THREE.Mesh(flatGeometry, material); object.castShadow = true; object.receiveShadow = true; scene.add(object);
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(flatGeometry, 28), new THREE.LineBasicMaterial({ color: '#aebbb6', transparent: true, opacity: .35 })); scene.add(edges);
     };
     const lift = exploded ? Math.max(42, e.height * 1.25) : 0;
     addShell(preview.base); addShell(preview.lid, lift);
+    for (const item of preview.extras || []) addShell(item.mesh,exploded ? 12 : 0);
     const addBox = (x: number, y: number, z: number, w: number, d: number, h: number, material: THREE.Material) => {
       const object = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
       object.position.set(x + w / 2 - e.width / 2, z + h / 2, y + d / 2 - e.depth / 2);
       object.castShadow = true; object.receiveShadow = true; scene.add(object); return object;
     };
+    for (const k of project.keepouts || []) {
+      const material=new THREE.MeshStandardMaterial({color:'#d97706',transparent:true,opacity:.12,depthWrite:false});materials.push(material);
+      const object=addBox(k.x,k.y,k.z,k.width,k.depth,k.height,material);object.castShadow=false;
+      const edges=new THREE.LineSegments(new THREE.EdgesGeometry(object.geometry),new THREE.LineBasicMaterial({color:'#b45309',transparent:true,opacity:.6}));edges.position.copy(object.position);scene.add(edges);
+    }
     if (showParts) for (const c of project.components) {
       const z = c.z + (c.mount === 'lid' ? lift : 0);
       const boardMaterial = makeMaterial(kindColors[c.kind]);
-      if (c.kind === 'board' && !isSideMount(c.mount)) {
+      const generated = preview.modules?.find(item => item.componentId === c.id);
+      if (generated) {
+        addShell(generated.mesh, c.mount === 'lid' ? lift : 0, boardMaterial);
+      } else if (c.kind === 'board' && !isSideMount(c.mount)) {
         const pcbZ = z + c.mountOffset;
         const pcbThickness = Math.min(1.6, Math.max(.2, c.height - c.mountOffset));
         addBox(c.x, c.y, pcbZ, c.width, c.depth, pcbThickness, boardMaterial);
@@ -109,5 +118,5 @@ export default function Scene3D({ project, preview, exploded, showParts, selecte
       textures.forEach(t => t.dispose()); materials.forEach(m => m.dispose()); renderer.dispose(); renderer.domElement.remove();
     };
   }, [project, preview, exploded, showParts, selected, cameraKey]);
-  return <div ref={host} className="scene-3d" role="img" aria-label="外壳三维预览，拖动旋转，滚轮缩放。组件为尺寸占位模型。">{error && <p className="scene-error" role="status">{error}</p>}</div>;
+  return <div ref={host} className="scene-3d" role="img" aria-label="外壳三维预览，拖动旋转，滚轮缩放。已生成的模组显示保存的实体，其余显示尺寸占位。">{error && <p className="scene-error" role="status">{error}</p>}</div>;
 }

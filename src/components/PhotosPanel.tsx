@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { Camera, Upload, ScanLine, MousePointer2, Check, Plus, Ruler, Image as ImageIcon } from 'lucide-react';
 import { faceDimensions, imagePointToPanel, imageRectToPanel, isSideMount, cn, compressPhoto, photoNames, responseError, uid } from '../lib';
-import type { Analysis, Part, Photo, PhotoSlot, Port } from '../types';
+import type { Analysis, ModuleBuildResult, Part, Photo, PhotoSlot, Port } from '../types';
 import { Badge, Note, NumberField } from './ui';
 import AIAnnotator from './AIAnnotator';
+import ModuleBuildAction from './ModuleBuildAction';
 
 export const photoGuide = [
   { slot: 'top' as PhotoSlot, title: '正面俯视', detail: '镜头垂直板面，四个板角完整可见。用于板轮廓、孔位及屏幕／键盘开口测量。', hint: '已知长宽 · 长边建议 ≥ 1000 px' },
@@ -13,7 +14,7 @@ export const photoGuide = [
   { slot: 'side' as PhotoSlot, title: '高度侧面', detail: '拍清 PCB 上下两侧的突出物。屏幕需拍玻璃与背板，按钮需拍安装螺纹和插入深度。', hint: '标明总高、PCB 厚度及安装基准面' },
 ];
 
-export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { part: Part; onUpdate: (patch: Partial<Part>) => void; onAIApply: (patch: Partial<Part>, ports: Port[]) => void; onGuide: () => void }) {
+export default function PhotosPanel({ part, onUpdate, onAIApply, onBuild, onGuide }: { part: Part; onUpdate: (patch: Partial<Part>) => void; onAIApply: (patch: Partial<Part>, ports: Port[]) => void; onBuild: (result: ModuleBuildResult, source: Part) => boolean; onGuide: () => void }) {
   const { u: planeWidth, v: planeDepth } = faceDimensions(part);
   const [slot, setSlot] = useState<PhotoSlot>('top');
   const [busy, setBusy] = useState(false);
@@ -22,36 +23,43 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
   const [points, setPoints] = useState<number[][]>([]);
   const [chosen, setChosen] = useState<string[]>([]);
   const [openingStart, setOpeningStart] = useState<number[] | null>(null);
-  const [autoAI, setAutoAI] = useState(true), [aiRequest, setAIRequest] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const img = useRef<HTMLImageElement>(null);
+  const latest = useRef(part); latest.current=part;
+  const pending=useRef({revision:0,active:true,controller:new AbortController()});
+  useEffect(()=>{pending.current.active=true;return()=>{pending.current.active=false;pending.current.revision++;pending.current.controller.abort();};},[]);
+  const cancel=()=>{pending.current.revision++;pending.current.controller.abort();pending.current.controller=new AbortController();setBusy(false);};
   const photo = part.photos[slot];
   const isPlane = slot === 'top' || slot === 'bottom';
   const analysis = photo?.analysis && photo.analysis.width === planeWidth && photo.analysis.depth === planeDepth ? photo.analysis : undefined;
   const showRectified = Boolean(analysis && mode !== 'corners');
-  const changeSlot = (value: PhotoSlot) => { setSlot(value); setError(''); setMode('view'); setChosen([]); setPoints([]); setOpeningStart(null); setAIRequest(0); };
-  const savePhoto = (value: Photo) => onUpdate({ photos: { ...part.photos, [slot]: value } });
+  const changeSlot = (value: PhotoSlot) => { cancel();setSlot(value); setError(''); setMode('view'); setChosen([]); setPoints([]); setOpeningStart(null); };
+  const savePhoto = (value: Photo) => onUpdate({ photos: { ...latest.current.photos, [slot]: value } });
   const upload = async (file?: File) => {
     if (!file) return;
+    cancel();const revision=pending.current.revision;
     setError(''); setBusy(true);
-    try { const dataUrl = await compressPhoto(file); savePhoto({ name: file.name, dataUrl }); setMode('view'); setChosen([]); setPoints([]); if (autoAI) setAIRequest(current => current + 1); }
-    catch (e) { setError(e instanceof Error ? e.message : '图片读取失败。'); }
-    finally { setBusy(false); if (input.current) input.current.value = ''; }
+    try { const dataUrl = await compressPhoto(file); if(!pending.current.active || pending.current.revision!==revision)return; savePhoto({ name: file.name, dataUrl }); setMode('view'); setChosen([]); setPoints([]); }
+    catch (e) { if(pending.current.active && pending.current.revision===revision)setError(e instanceof Error ? e.message : '图片读取失败。'); }
+    finally { if(pending.current.active && pending.current.revision===revision){setBusy(false); if (input.current) input.current.value = '';} }
   };
   const runAnalysis = async () => {
     if (!photo) return;
+    cancel();const revision=pending.current.revision,signal=pending.current.controller.signal;
+    const current=()=>pending.current.active && pending.current.revision===revision && latest.current.photos[slot]===photo && latest.current.mount===part.mount && faceDimensions(latest.current).u===planeWidth && faceDimensions(latest.current).v===planeDepth;
     setBusy(true); setError('');
     try {
       const data = new FormData();
-      data.append('image', await (await fetch(photo.dataUrl)).blob(), 'component.jpg'); data.append('width', String(planeWidth)); data.append('depth', String(planeDepth));
+      data.append('image', await (await fetch(photo.dataUrl,{signal})).blob(), 'component.jpg'); data.append('width', String(planeWidth)); data.append('depth', String(planeDepth));
       const corners = mode === 'corners' ? points : photo.corners;
       if (corners?.length === 4) data.append('corners', JSON.stringify(corners));
-      const response = await fetch('/api/analyze', { method: 'POST', body: data });
+      const response = await fetch('/api/analyze', { method: 'POST', body: data,signal });
       if (!response.ok) throw new Error(await responseError(response));
       const result: Analysis = await response.json();
-      savePhoto({ ...photo, corners: result.corners, analysis: result, ai: undefined }); setChosen([]); setMode('view'); if (autoAI) setAIRequest(current => current + 1);
-    } catch (e) { setError(e instanceof Error ? e.message : '测量服务暂不可用。'); }
-    finally { setBusy(false); }
+      if(!current())return;
+      savePhoto({ ...photo, corners: result.corners, analysis: result, ai: undefined }); setChosen([]); setMode('view');
+    } catch (e) { if(current() && !signal.aborted)setError(e instanceof Error ? e.message : '测量服务暂不可用。'); }
+    finally { if(pending.current.active && pending.current.revision===revision)setBusy(false); }
   };
   const clickPhoto = (event: MouseEvent<HTMLButtonElement>) => {
     if (!img.current || mode === 'view') return;
@@ -79,7 +87,7 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
       </button>)}
     </div>
     {isSideMount(part.mount) && <Note>正面 / 背面照片需正对安装面，横向对应 U。图片坐标从左上计；采用孔位和开口时，V 自动转换为从底部向上。背面横向方向仍需核对。</Note>}
-    <label className="ai-auto-label"><input type="checkbox" checked={autoAI} onChange={e => setAutoAI(e.target.checked)} />上传或校准后自动 AI 预标注（配置视觉模型后发送当前图片）</label>
+    <ModuleBuildAction part={part} onApply={onBuild} disabled={busy} />
     <div className="photo-editor card">
       <div className="card-header"><div className="flex items-center gap-2"><ImageIcon size={16} /><strong>{photoNames[slot]}</strong>{analysis && <Badge tone="success">已校准</Badge>}</div><button className="button button-small" onClick={() => input.current?.click()} disabled={busy}><Upload size={14} />{photo ? '替换图片' : '上传图片'}</button></div>
       <input ref={input} type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" tabIndex={-1} aria-label="上传组件照片" onChange={e => void upload(e.target.files?.[0])} />
@@ -96,9 +104,9 @@ export default function PhotosPanel({ part, onUpdate, onAIApply, onGuide }: { pa
       <div className="photo-toolbar"><span className="truncate text-xs text-slate-500">{photo?.name || '浅色纯背景、均匀光线，完整保留板件轮廓'}</span>{isPlane && photo && <div className="flex flex-wrap items-center gap-2"><button className="button button-small" disabled={busy} onClick={() => { setMode(mode === 'corners' ? 'view' : 'corners'); setPoints(photo.corners || []); setOpeningStart(null); }}><MousePointer2 size={14} />标记板角</button><button className="button button-primary button-small" onClick={() => void runAnalysis()} disabled={busy || (mode === 'corners' && points.length !== 4)}><ScanLine size={14} />{busy ? '正在测量…' : '校准并识别'}</button></div>}</div>
     </div>
     {error && <p className="inline-error" role="alert">{error}</p>}
-    {photo && <AIAnnotator key={`${part.id}:${slot}`} part={part} photo={photo} slot={slot} autoRequest={aiRequest} onPhotoUpdate={savePhoto} onApply={onAIApply} />}
+    {photo && <AIAnnotator key={`${part.id}:${slot}`} part={part} photo={photo} slot={slot} onPhotoUpdate={savePhoto} onApply={onAIApply} />}
     {mode === 'corners' && <div className="card p-4"><p className="mb-3 text-sm font-medium">按左上、右上、右下、左下标记 PCB 板角，避开突出连接器。</p><div className="calibration-fields">{Array.from({ length: 4 }, (_, i) => <div key={i}><span className="mb-2 block text-xs text-slate-500">板角 {i + 1}</span><div className="grid grid-cols-2 gap-2"><NumberField label="X" value={+(100 * (points[i]?.[0] || 0)).toFixed(1)} max={100} unit="%" onChange={n => setPoints(current => { const next = Array.from({ length: 4 }, (_, j) => current[j] || [.1 + (j === 1 || j === 2 ? .8 : 0), .1 + (j >= 2 ? .8 : 0)]); next[i] = [n / 100, next[i][1]]; return next; })} /><NumberField label="Y" value={+(100 * (points[i]?.[1] || 0)).toFixed(1)} max={100} unit="%" onChange={n => setPoints(current => { const next = Array.from({ length: 4 }, (_, j) => current[j] || [.1 + (j === 1 || j === 2 ? .8 : 0), .1 + (j >= 2 ? .8 : 0)]); next[i] = [next[i][0], n / 100]; return next; })} /></div></div>)}</div></div>}
-    {!isPlane && <Note>此视角用于复核接口和上下突出高度。第一版不自动推断侧面高度，请把实测值填入组件或接口尺寸。</Note>}
+    {!isPlane && <Note>此视角用于统一建模时判断接口和上下突出部件；图片推断的高度仍需实测，请把实测值填入组件或接口尺寸。</Note>}
     {analysis && mode !== 'corners' && <div className="card measurement-results"><div className="card-header"><div><strong>圆孔候选</strong><span className="ml-2 text-xs text-slate-500">{analysis.method} · {analysis.holes.length} 个</span></div><button className="button button-small" onClick={() => { setMode(mode === 'hole' ? 'view' : 'hole'); setOpeningStart(null); }}><Plus size={14} />手动标孔</button></div>
       <p className="px-4 pt-3 text-xs leading-5 text-slate-500">选择用于安装外壳的孔，排除散热器孔。采用后可在右侧修改坐标和孔径。</p>
       {analysis.holes.length ? <div className="hole-candidates">{analysis.holes.map((h, i) => <label key={h.id}><input type="checkbox" checked={chosen.includes(h.id)} onChange={e => setChosen(current => e.target.checked ? [...current, h.id] : current.filter(id => id !== h.id))} /><span><strong>孔 {i + 1}</strong><small>X {h.x} · Y {h.y} · ⌀ {h.diameter} mm</small></span></label>)}</div> : <p className="px-4 py-5 text-sm text-slate-500">没有找到可靠的圆孔候选。可以点击“手动标孔”，或在右侧输入孔位。</p>}

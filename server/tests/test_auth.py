@@ -33,7 +33,7 @@ def test_auth_guards_all_business_routes_and_does_not_return_secrets(protected):
     assert status.headers["cache-control"] == "no-store"
     for path in ("/api/health", "/api/ai/config", "/docs", "/openapi.json"):
         assert protected.get(path).status_code == 401
-    for path in ("/api/preview", "/api/validate", "/api/export", "/api/analyze", "/api/coupon", "/api/ai/chat", "/api/ai/annotate", "/api/ai/settings", "/api/ai/test"):
+    for path in ("/api/preview", "/api/validate", "/api/normalize", "/api/export", "/api/analyze", "/api/coupon", "/api/module/preview", "/api/module/export", "/api/ai/module", "/api/ai/chat", "/api/ai/annotate", "/api/ai/settings", "/api/ai/test"):
         assert protected.post(path, json={}).status_code == 401
     response = login(protected)
     assert response.status_code == 200

@@ -2,6 +2,31 @@
 SIDE_FACES = ("front", "back", "left", "right")
 
 
+def adhesive_mount(c):
+    return c.mount == "lid" and c.kind in ("screen", "keyboard") and c.mountingMethod == "adhesive" and c.supportEnabled
+
+
+def adhesive_frame(c, e):
+    """Glue pad contacts the top mounting face through a vertical glue gap."""
+    u, v, w, h = opening_bounds(c)
+    gap = e.clearance
+    inner = (u - gap, v - gap, w + 2 * gap, h + 2 * gap)
+    outer = (inner[0] - c.supportWidth, inner[1] - c.supportWidth,
+             inner[2] + 2 * c.supportWidth, inner[3] + 2 * c.supportWidth)
+    bottom = mounting_plane(c) + c.adhesiveClearance
+    return inner, outer, bottom, bottom + c.supportHeight
+
+
+def frame_boxes(inner, outer, bottom, top):
+    """Four non-overlapping AABBs of a rectangular ring for conservative checks."""
+    ix, iy, iw, ih = inner
+    ox, oy, ow, oh = outer
+    return [(ox, oy, bottom, ow, iy - oy, top - bottom),
+            (ox, iy + ih, bottom, ow, oy + oh - iy - ih, top - bottom),
+            (ox, iy, bottom, ix - ox, ih, top - bottom),
+            (ix + iw, iy, bottom, ox + ow - ix - iw, ih, top - bottom)]
+
+
 def face_dimensions(c):
     if c.mount in ("front", "back"):
         return c.width, c.height, c.depth

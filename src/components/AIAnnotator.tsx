@@ -1,50 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
-import { Sparkles, Square, Check, ScanLine } from 'lucide-react';
+import { Sparkles, Check, ScanLine } from 'lucide-react';
 import type { AIAnnotation, AIFeature, Part, Photo, PhotoSlot, Port } from '../types';
-import { AIModelSelect, AISetup, imageDataUrl, useAI } from '../ai';
-import { faceDimensions, imagePointToPanel, imageRectToPanel, isSideMount, responseError, uid } from '../lib';
+import { faceDimensions, imagePointToPanel, imageRectToPanel, isSideMount, uid } from '../lib';
 import { Badge, Note, NumberField } from './ui';
 
 const labels = { hole: '安装孔候选', opening: '面板开口', connector: '接口', obstruction: '突出 / 遮挡' };
-export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpdate, onApply }: {
-  part: Part; photo: Photo; slot: PhotoSlot; autoRequest: number;
+export default function AIAnnotator({ part, photo, slot, onPhotoUpdate, onApply }: {
+  part: Part; photo: Photo; slot: PhotoSlot;
   onPhotoUpdate: (photo: Photo) => void; onApply: (patch: Partial<Part>, ports: Port[]) => void;
 }) {
-  const ai = useAI();
-  const { u: planeWidth, v: planeDepth, thickness } = faceDimensions(part);
-  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [chosen, setChosen] = useState<string[]>([]);
+  const { u: planeWidth, v: planeDepth } = faceDimensions(part);
+  const [error, setError] = useState(''), [chosen, setChosen] = useState<string[]>([]);
   const [result, setResult] = useState<AIAnnotation | undefined>(photo.ai), [notice, setNotice] = useState('');
   const [portDetails, setPortDetails] = useState<Record<string, { edge?: Port['edge']; offset?: number; width?: number; height?: number; z?: number }>>({});
-  const aborter = useRef<AbortController | null>(null), autoDone = useRef(0);
   const analysis = photo.analysis?.width === planeWidth && photo.analysis.depth === planeDepth ? photo.analysis : undefined;
   const calibrated = Boolean(analysis && ['top', 'bottom'].includes(slot));
   const image = calibrated ? analysis!.rectifiedImage : photo.dataUrl;
   const sourceKey = JSON.stringify([image, planeWidth, planeDepth, part.mount, slot]);
-  const latest = useRef(sourceKey); latest.current = sourceKey;
   const previous = useRef(sourceKey);
   const validResult = result && result.width === planeWidth && result.depth === planeDepth && result.calibrated === calibrated ? result : undefined;
   useEffect(() => {
-    if (previous.current !== sourceKey) { aborter.current?.abort(); setResult(photo.ai); setChosen([]); setPortDetails({}); setNotice(''); previous.current = sourceKey; }
+    if (previous.current !== sourceKey) { setResult(photo.ai); setChosen([]); setPortDetails({}); setNotice(''); previous.current = sourceKey; }
+    else setResult(photo.ai);
   }, [sourceKey, photo.ai]);
-  useEffect(() => () => aborter.current?.abort(), []);
-  const run = async () => {
-    if (busy || !ai.model?.configured || !ai.model.vision) return;
-    const key = sourceKey, model = ai.model, controller = new AbortController(); aborter.current = controller;
-    setBusy(true); setError(''); setNotice(''); setChosen([]); setPortDetails({});
-    try {
-      const response = await fetch('/api/ai/annotate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-        body: JSON.stringify({ image: await imageDataUrl(image), width: planeWidth, depth: planeDepth, height: thickness, mount: part.mount, dimensionsVerified: part.verified, kind: part.kind, slot, calibrated,
-          hints: calibrated ? analysis?.holes.map(h => ({ x: h.x, y: h.y, diameter: h.diameter })) : [], provider: model.provider, model: model.id }) });
-      if (!response.ok) throw new Error(await responseError(response));
-      const next: AIAnnotation = await response.json();
-      if (controller.signal.aborted || latest.current !== key) return;
-      setResult(next); onPhotoUpdate({ ...photo, ai: next });
-    } catch (e) { if (latest.current === key) setError(controller.signal.aborted ? '已停止标注。' : e instanceof Error ? e.message : 'AI 标注失败。'); }
-    finally { setBusy(false); aborter.current = null; }
-  };
-  useEffect(() => {
-    if (autoRequest && autoDone.current !== autoRequest && ai.model?.configured && ai.model.vision) { autoDone.current = autoRequest; void run(); }
-  }, [autoRequest, ai.model?.configured, ai.model?.id]);
   const editFeature = (id: string, patch: Partial<AIFeature>) => setResult(current => current && ({ ...current, features: current.features.map(f => f.id === id ? { ...f, ...patch } : f) }));
   const editBounds = (f: AIFeature, index: number, value: number) => {
     const bbox = [...f.bbox]; bbox[index] = value / 100;
@@ -103,12 +81,11 @@ export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpd
       onApply(patch, ports); setChosen([]); setNotice('已采用候选，仍为待复核尺寸。可在属性栏修正，也可撤销。');
     } catch (e) { setError(e instanceof Error ? e.message : '采用失败。'); }
   };
+  if (!photo.ai) return null;
   return <section className="card ai-annotation" aria-label="AI 图片预标注">
     <div className="card-header"><strong><Sparkles size={17} />AI 预标注</strong><Badge>Pi Agent</Badge></div>
-    <div className="space-y-4 p-4"><AIModelSelect disabled={busy} vision />
-      <p className="text-xs leading-6 text-slate-500">识别孔的用途、接口、显示区和按键区。会将当前视角的图片发送给所选 AI 供应商；已校准图片用于估算平面尺寸。</p>
-      {!ai.model?.configured && <AISetup />}
-      <div className="flex flex-wrap items-center gap-3"><button className="button button-primary button-small" disabled={busy || !ai.model?.configured || !ai.model.vision} onClick={() => void run()}><Sparkles size={14} />{busy ? 'AI 正在标注…' : validResult ? '重新预标注' : 'AI 预标注图片'}</button>{busy && <button className="button button-small" onClick={() => aborter.current?.abort()}><Square size={13} />停止</button>}<span className="text-xs text-slate-500" role="status">{calibrated ? '使用已校准俯视图' : '先标注目标和板角，校准后可测量'}</span></div>
+    <div className="space-y-4 p-4"><p className="text-xs leading-6 text-slate-500">检查本视角的标注，可修改候选或采用孔位。补充照片后，点击上方按钮重新统一标注。</p>
+      {!validResult && <Note>尺寸或校准状态已变化，请点击上方按钮重新统一标注。</Note>}
       {error && <p className="inline-error" role="alert">{error}</p>}{notice && <p className="text-xs text-teal-700" role="status">{notice}</p>}
       {validResult && <>
         <div className="ai-image-stage"><div className="ai-image-wrap"><img src={image} alt="AI 预标注结果，编号对应下方候选列表" /><svg className="photo-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">{validResult.features.map((f, i) => <g key={f.id}><rect x={f.bbox[0] * 100} y={f.bbox[1] * 100} width={f.bbox[2] * 100} height={f.bbox[3] * 100} fill="#0f766e" fillOpacity={chosen.includes(f.id) ? .25 : .06} stroke="#0f766e" strokeWidth=".35" /><text x={f.bbox[0] * 100} y={Math.max(3, f.bbox[1] * 100)} fill="#0f766e" fontSize="3">{i + 1}</text></g>)}{validResult.corners && <polygon points={validResult.corners.map(p => `${p[0] * 100},${p[1] * 100}`).join(' ')} fill="none" stroke="#b45309" strokeWidth=".4" />}</svg></div></div>
@@ -128,7 +105,7 @@ export default function AIAnnotator({ part, photo, slot, autoRequest, onPhotoUpd
         })}</div>
         {validResult.warnings.length > 0 && <Note warning>{validResult.warnings.join('；')}</Note>}
         {!validResult.features.length && <Note>未找到可用目标。请补充清晰视角或检查组件类型后重试。</Note>}
-        <div className="flex flex-wrap gap-3"><button className="button button-primary button-small" disabled={!chosen.length || busy} onClick={apply}><Check size={14} />采用 {chosen.length} 个候选</button><button className="button button-small" disabled={busy} onClick={() => { onPhotoUpdate({ ...photo, ai: validResult }); setNotice('已保存标注，未改变模型尺寸。'); }}>保存标注</button></div>
+        <div className="flex flex-wrap gap-3"><button className="button button-primary button-small" disabled={!chosen.length} onClick={apply}><Check size={14} />采用 {chosen.length} 个候选</button><button className="button button-small" onClick={() => { onPhotoUpdate({ ...photo, ai: validResult }); setNotice('已保存标注，未改变模型尺寸。'); }}>保存标注</button></div>
       </>}
     </div>
   </section>;

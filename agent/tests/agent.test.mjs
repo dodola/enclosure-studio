@@ -9,7 +9,7 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { applyEdits, createDesignTools, normaliseAnnotations, stripPhotos } from '../domain.mjs';
 import { createHandler, parseImage } from '../server.mjs';
 import { createSession } from '../pi.mjs';
-import { changeMount, createComponent, faceDimensions, imagePointToPanel, imageRectToPanel, normaliseProject, resizeEnclosure, templates } from '../../shared/design.mjs';
+import { autoLayoutProject, changeMount, createComponent, faceDimensions, imagePointToPanel, imageRectToPanel, normaliseProject, resizeEnclosure, templates } from '../../shared/design.mjs';
 
 const project = JSON.parse(await readFile(new URL('../../server/example-project.json', import.meta.url), 'utf8'));
 const listen = async server => { await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); return `http://127.0.0.1:${server.address().port}`; };
@@ -104,7 +104,7 @@ from server.app import app
 r = TestClient(app).post(sys.argv[1], json=json.loads(sys.argv[2]))
 if r.status_code != 200: raise RuntimeError(r.text)
 data = r.json()
-if sys.argv[1].endswith('preview'):
+if sys.argv[1] == '/api/preview':
     data = {part: {'watertight': data[part]['watertight']} for part in ['base', 'lid']}
 print(json.dumps(data))`;
     const { stdout } = await run(python, ['-c', script, path, JSON.stringify(value)], { cwd, signal,
@@ -177,6 +177,45 @@ test('shared placement preserves face measurements, anchors side panels on resiz
   assert.deepEqual(imagePointToPanel(initial.components[0], 3, 3), { x: 3, y: 3 });
 });
 
+test('real Pi SDK configures assembly fixtures and keepouts through the same geometry as export', async t => {
+  const initial={...structuredClone(project),components:[],ports:[],keepouts:[],enclosure:{...project.enclosure,width:184,depth:180,height:55,standoffDiameter:8,ventilation:false}};
+  const additions=[
+    {templateId:'screen',reason:'添加内侧粘贴屏幕',mount:'lid',faceWidth:60,faceHeight:30,thickness:6,x:40,y:20,z:49,mountOffset:3,openingWidth:46,openingDepth:18,mountingMethod:'adhesive',supportWidth:3,supportHeight:1.2,adhesiveClearance:.3},
+    {templateId:'battery',reason:'添加电池托架',mount:'base',faceWidth:30,faceHeight:20,thickness:8,x:40,y:90,z:5,mountingMethod:'cradle',strapSlots:true},
+    {templateId:'button',reason:'添加侧轻触键帽',mount:'left',faceWidth:14,faceHeight:14,thickness:16,y:60,z:12,mountOffset:14,tactileEnabled:true,openingWidth:6,openingDepth:6},
+    {templateId:'speaker',reason:'添加扬声器网筋',mount:'lid',faceWidth:30,faceHeight:30,thickness:6,x:120,y:20,z:46.1,mountOffset:3,openingWidth:24,openingDepth:24,speakerGrille:true},
+  ];
+  const f=await fixture(t,[...additions.map(args=>({tool:'add_component',args})),
+    {tool:'edit_design',args:{reason:'预留接线空间',addKeepouts:[{name:'电池接线',purpose:'cable',x:55,y:114,z:8,width:5,depth:10,height:3}]}},
+    {text:'已添加托架、内侧承托、键帽、防护网及接线保留区，均为待实测示例。'}],realGeometry);
+  const stream=await events(await post(f.url,'/api/ai/chat',{project:initial,message:'按示例创建完整装配结构并预留接线空间'}));
+  const done=stream.find(e=>e.type==='done');
+  assert.ok(done,JSON.stringify(stream.at(-1)));
+  assert.equal(done.project.components.length,4);
+  assert.equal(done.changes.length,5);
+  assert.equal(done.project.keepouts.length,1);
+  assert.equal(done.project.keepouts[0].verified,false);
+  assert.equal(stream.filter(e=>e.type==='tool' && e.status==='rejected').length,0);
+  assert.equal(done.project.components[0].mountingMethod,'adhesive');
+  assert.equal(done.project.components[1].mountingMethod,'cradle');
+  assert.equal(done.project.components[2].tactileEnabled,true);
+  assert.equal(done.project.components[3].speakerGrille,true);
+});
+
+test('owned keepouts follow edits and resize and are removed with their component', () => {
+  const initial=normaliseProject(project),owner=initial.components.find(c=>c.mount==='lid');
+  initial.keepouts=[{id:'cable',name:'排线',componentId:owner.id,purpose:'cable',x:40,y:30,z:30,width:5,depth:5,height:3,verified:true}];
+  const moved=applyEdits(initial,{reason:'移动屏幕',components:[{id:owner.id,patch:{x:owner.x+4,z:owner.z-2}}]});
+  assert.equal(moved.keepouts[0].x,44);assert.equal(moved.keepouts[0].z,28);
+  const resized=resizeEnclosure(moved,{height:initial.enclosure.height+5});
+  assert.equal(resized.keepouts[0].z,33);
+  const removed=applyEdits(initial,{reason:'删除屏幕',removeComponentIds:[owner.id]});
+  assert.equal(removed.keepouts.length,0);
+  assert.throws(()=>applyEdits(initial,{reason:'伪造留空复核',keepouts:[{id:'cable',patch:{verified:true}}]}));
+  const legacy=structuredClone(project);delete legacy.components[0].holes;
+  assert.deepEqual(normaliseProject(legacy).components[0].holes,[]);
+});
+
 test('real Pi SDK streams tool calls, repairs a rejected edit, and keeps follow-up context current', async t => {
   const f = await fixture(t, [
     { tool: 'inspect_design' }, { tool: 'edit_design', args: { reason: '薄壁', enclosure: { wall: .5 } } },
@@ -215,4 +254,87 @@ test('disconnect aborts the SDK request and never applies a partial draft', asyn
   while (!received.includes('"status":"done"')) { const chunk = await reader.read(); received += new TextDecoder().decode(chunk.value); }
   controller.abort(); await reader.cancel().catch(() => {});
   assert.ok(!received.includes('"type":"done"'));
+});
+
+
+test('a rejected busy request never unlocks an active Pi conversation', async t => {
+  const f=await fixture(t,[{text:'准备好了'},{wait:true}]);
+  const first=await events(await post(f.url,'/api/ai/chat',{project,message:'开始'}));
+  const sessionId=first.find(e=>e.type==='session').sessionId;
+  const controller=new AbortController();
+  const running=await post(f.url,'/api/ai/chat',{project,message:'继续',sessionId},controller.signal);
+  const reader=running.body.getReader();
+  await reader.read();
+  for(const message of ['重复请求B','重复请求C']) {
+    const rejected=await post(f.url,'/api/ai/chat',{project,message,sessionId});
+    assert.equal(rejected.status,409);
+    assert.match((await rejected.json()).detail,/仍在处理/);
+  }
+  controller.abort(); await reader.cancel().catch(()=>{});
+});
+
+test('grille speakers retain a recessed front on layout and mount changes', () => {
+  const initial=normaliseProject(project);
+  initial.enclosure.height=44;
+  const c=createComponent('speaker',initial,{id:'grille',mount:'lid',faceWidth:30,faceHeight:30,thickness:6,speakerGrille:true});
+  assert.equal(c.z+c.height,initial.enclosure.height-initial.enclosure.lid-initial.enclosure.clearance);
+  initial.components=[c];initial.ports=[];
+  const arranged=autoLayoutProject(initial);
+  assert.equal(arranged.components[0].z+c.height,arranged.enclosure.height-arranged.enclosure.lid-arranged.enclosure.clearance);
+  for(const mount of ['left','back','right','front','lid']) {
+    const changed={...c,...changeMount(c,mount,initial.enclosure)};
+    const e=initial.enclosure;
+    const gap=mount==='left'?changed.x-e.wall:mount==='back'?changed.y-e.wall:mount==='right'?e.width-e.wall-changed.x-changed.width:mount==='front'?e.depth-e.wall-changed.y-changed.depth:e.height-e.lid-changed.z-changed.height;
+    assert.ok(Math.abs(gap-e.clearance)<.001);
+  }
+  assert.equal(changeMount(c,'base',initial.enclosure).speakerGrille,false);
+});
+
+const moduleArgs = { bodyZ: 0, bodyThickness: 1.6, features: [{ name: 'USB 接口', shape: 'box', operation: 'add', x: 10, y: 10, z: 1.6, width: 12, depth: 8, height: 4 }],
+  annotations: [{slot:'top',features:[feature],warnings:['孔径待实测']},{slot:'side',features:[],warnings:['高度待实测']}], warnings:['简化模型，需实测'] };
+const modulePhoto = async () => 'data:image/png;base64,' + (await readFile(new URL('../../public/samples/firefly-top.png', import.meta.url))).toString('base64');
+
+test('unified module generation passes all images through real Pi and validates an actual connected solid', async t => {
+  const image = await modulePhoto(), component = structuredClone(project.components[0]);
+  const f = await fixture(t, [{tool:'submit_module_model',args:moduleArgs},{text:'建模完成，需复核高度。'}], realGeometry);
+  const response = await post(f.url, '/api/ai/module', {component,photos:[{slot:'top',image,calibrated:true},{slot:'side',image,calibrated:true}]});
+  assert.equal(response.status,200, await response.clone().text());
+  const result = await response.json();
+  assert.deepEqual(Object.keys(result.annotations), ['top','side']);
+  assert.equal(result.annotations.top.calibrated,true);
+  assert.equal(result.annotations.side.calibrated,false);
+  assert.equal(result.moduleModel.features[0].name,'USB 接口');
+  assert.ok(result.moduleModel.features[0].id);
+  assert.equal(result.moduleModel.source,'ai');
+  assert.equal(component.width,project.components[0].width);
+  assert.equal(component.verified,project.components[0].verified);
+  assert.equal(f.requests[0].messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(c=>c.type==='image_url').length,2);
+  assert.deepEqual(f.requests[0].tools.map(t=>t.function.name),['submit_module_model']);
+});
+
+test('module generation requires matching views and valid bounds before returning a replacement', async t => {
+  const image=await modulePhoto(), component=project.components[0];
+  for (const args of [
+    {...moduleArgs,annotations:[moduleArgs.annotations[0],moduleArgs.annotations[0]]},
+    {...moduleArgs,annotations:[moduleArgs.annotations[0]]},
+    {...moduleArgs,features:[{...moduleArgs.features[0],x:399}]},
+    {...moduleArgs,features:[{...moduleArgs.features[0],z:5}]},
+  ]) {
+    const f=await fixture(t,[{tool:'submit_module_model',args},{text:'无法提交有效实体。'}],realGeometry);
+    const response=await post(f.url,'/api/ai/module',{component,photos:[{slot:'top',image},{slot:'side',image}]});
+    assert.equal(response.status,502,await response.clone().text());
+    assert.equal((await response.json()).moduleModel,undefined);
+  }
+  const f=await fixture(t,[]);
+  const response=await post(f.url,'/api/ai/module',{component,photos:[{slot:'top',image},{slot:'top',image}]});
+  assert.equal(response.status,422); assert.equal(f.requests.length,0);
+});
+
+test('cancelling unified module generation aborts the provider and returns no saved model', async t => {
+  const image=await modulePhoto(), f=await fixture(t,[{wait:true}]);
+  const controller=new AbortController();
+  const response=post(f.url,'/api/ai/module',{component:project.components[0],photos:[{slot:'top',image}]},controller.signal);
+  const reject=assert.rejects(response,/abort/i);
+  while (!f.requests.length) await new Promise(resolve=>setTimeout(resolve,10));
+  controller.abort(); await reject;
 });

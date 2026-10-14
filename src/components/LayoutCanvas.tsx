@@ -30,6 +30,7 @@ export default function LayoutCanvas({ project, selected, onSelect, onMove, laye
           <rect x="0" y="0" width={e.width} height={e.depth} rx={e.cornerRadius} fill="#ecf1f0" stroke="#869a97" strokeWidth=".8" />
           <rect x={e.wall} y={e.wall} width={e.width - 2 * e.wall} height={e.depth - 2 * e.wall} rx={Math.max(0, e.cornerRadius - e.wall)} fill="url(#plan-grid)" stroke="#a7b5b3" strokeWidth=".5" />
           {fasteningPoints(e).map(([x, y], i) => <g key={i}><circle cx={x} cy={y} r="4" fill="#d3ddda" stroke="#a5b4b0" strokeWidth=".4" /><circle cx={x} cy={y} r={e.screwDiameter / 2} fill="#f8fafc" /></g>)}
+          {(project.keepouts || []).map(k=><g key={k.id}><rect x={k.x} y={k.y} width={k.width} height={k.depth} fill="#f59e0b" fillOpacity=".12" stroke="#b45309" strokeWidth=".5" strokeDasharray="2 1"/><text x={k.x+1} y={k.y+3} fontSize="2.4" fill="#92400e">{k.name} Z{k.z}</text></g>)}
         </svg>
         {project.components.filter(c => layer === 'all' || c.mount === layer || layer === 'side' && isSideMount(c.mount)).map(c => <button key={c.id} type="button" aria-label={`选择 ${c.name}，${mountNames[c.mount]}，位置 X ${c.x.toFixed(1)} Y ${c.y.toFixed(1)} Z ${c.z.toFixed(1)} 毫米`} title={`${c.name} · ${mountNames[c.mount]} · ${c.width} × ${c.depth} × ${c.height} mm`}
           className={cn('plan-part', selected === c.id && 'plan-part-selected')}

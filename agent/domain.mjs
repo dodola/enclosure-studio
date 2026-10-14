@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import { Check } from 'typebox/value';
-import { autoLayoutProject, createComponent, normaliseProject, resizeEnclosure, templates } from '../shared/design.mjs';
+import { autoLayoutProject, createComponent, normaliseProject, resizeEnclosure, patchComponent, templates } from '../shared/design.mjs';
 
 const object = properties => Type.Object(properties, { additionalProperties: false });
 const number = Type.Number({ minimum: 0, maximum: 500 });
@@ -17,7 +17,20 @@ const partFields = { name: text, kind, width: number, depth: number, height: num
   mount, mountOffset: number,
   openingWidth: number, openingDepth: number, openingX: number, openingY: number,
   openingShape: Type.Optional(openingShape), openingRadius: Type.Optional(number),
+  mountingMethod: Type.Optional(Type.Union(['holes', 'adhesive', 'cradle', 'none'].map(Type.Literal))),
+  supportEnabled: Type.Optional(Type.Boolean()), supportWidth: Type.Optional(Type.Number({ minimum: 0.1, maximum: 20 })),
+  supportHeight: Type.Optional(Type.Number({ minimum: 0.1, maximum: 10 })), adhesiveClearance: Type.Optional(Type.Number({ minimum: 0, maximum: 5 })),
   holes: Type.Array(hole, { maxItems: 40 }) };
+const assemblyFields = {
+  cradleWall: Type.Number({minimum:1.2,maximum:5}), clampThickness: Type.Number({minimum:1.2,maximum:5}), strapSlots:Type.Boolean(),
+  fastenerType:Type.Union(['pilot','heatsetM3'].map(Type.Literal)),insertDiameter:Type.Number({minimum:3.5,maximum:6}),insertDepth:Type.Number({minimum:2,maximum:8}),
+  speakerGrille:Type.Boolean(),grilleBarWidth:Type.Number({minimum:.8,maximum:3}),grilleSpacing:Type.Number({minimum:1,maximum:8}),grilleThickness:Type.Number({minimum:.8,maximum:3}),
+  tactileEnabled:Type.Boolean(),keyDiameter:Type.Number({minimum:3,maximum:12}),keyTravel:Type.Number({minimum:.2,maximum:1.5}),keyClearance:Type.Number({minimum:.15,maximum:.6}),keyFlange:Type.Number({minimum:1,maximum:3}),keyProjection:Type.Number({minimum:.5,maximum:3}),guideLength:Type.Number({minimum:1.2,maximum:6}),
+};
+Object.assign(partFields,optional(assemblyFields));
+const keepoutFields={name:text,componentId:Type.Optional(Type.Union([text,Type.Null()])),purpose:Type.Union(['cable','plug','removal'].map(Type.Literal)),
+  x:Type.Number({minimum:-100,maximum:800}),y:Type.Number({minimum:-100,maximum:800}),z:Type.Number({minimum:-100,maximum:500}),
+  width:Type.Number({exclusiveMinimum:0,maximum:500}),depth:Type.Number({exclusiveMinimum:0,maximum:500}),height:Type.Number({exclusiveMinimum:0,maximum:500})};
 const portFields = { name: text, componentId: text, edge, offset: number, width: number, height: number, z: number };
 const shellFields = Object.fromEntries(['width', 'depth', 'height', 'wall', 'floor', 'lid', 'clearance', 'standoffDiameter', 'screwDiameter', 'pilotDiameter', 'lipHeight'].map(k => [k, number]));
 shellFields.screwHeadDiameter = Type.Number({ minimum: 2, maximum: 7.2 });
@@ -34,6 +47,9 @@ export const editSchema = object({
   addPorts: Type.Optional(Type.Array(object(portFields), { maxItems: 20 })),
   removeComponentIds: Type.Optional(Type.Array(text, { maxItems: 30 })),
   removePortIds: Type.Optional(Type.Array(text, { maxItems: 50 })),
+  keepouts:Type.Optional(Type.Array(object({id:text,patch:object(optional(keepoutFields))}),{maxItems:50})),
+  addKeepouts:Type.Optional(Type.Array(object(keepoutFields),{maxItems:50})),
+  removeKeepoutIds:Type.Optional(Type.Array(text,{maxItems:50})),
 });
 function partFieldsWithoutOpeningOffsets() { return { ...partFields, openingX: Type.Optional(number), openingY: Type.Optional(number) }; }
 
@@ -63,9 +79,9 @@ export function applyEdits(project, input) {
     next = resizeEnclosure(next, input.enclosure);
   }
   for (const { id, patch } of input.components ?? []) {
+    next=patchComponent(next,id,patch);
     const c = find(next.components, id);
-    const measured = ['kind', 'width', 'depth', 'height', 'mount', 'mountOffset', 'openingWidth', 'openingDepth', 'openingX', 'openingY', 'openingShape', 'openingRadius', 'holes'].some(k => k in patch);
-    Object.assign(c, patch);
+    const measured = Object.keys(partFields).filter(k=>!['name','x','y','z'].includes(k)).some(k => k in patch);
     if (patch.holes) c.holes = patch.holes.map(h => ({ ...h, id: randomUUID(), source: 'pi-agent', verified: false }));
     if (measured) c.verified = false;
   }
@@ -76,8 +92,12 @@ export function applyEdits(project, input) {
     find(next.components, id);
     next.components = next.components.filter(c => c.id !== id);
     next.ports = next.ports.filter(p => p.componentId !== id);
+    next.keepouts=next.keepouts.filter(k=>k.componentId!==id);
   }
   for (const id of input.removePortIds ?? []) { find(next.ports, id); next.ports = next.ports.filter(p => p.id !== id); }
+  for (const {id,patch} of input.keepouts ?? []) Object.assign(find(next.keepouts,id),patch,{verified:false});
+  for (const k of input.addKeepouts ?? []) next.keepouts.push({...k,id:randomUUID(),verified:false});
+  for (const id of input.removeKeepoutIds ?? []) {find(next.keepouts,id);next.keepouts=next.keepouts.filter(k=>k.id!==id);}
   return stripPhotos(next);
 }
 
@@ -113,14 +133,16 @@ export function createDesignTools(state, geometry) {
   return [
     { name: 'inspect_design', label: '检查当前设计', description: '读取权威的当前项目（mm）和几何检查问题。', parameters: object({}),
       execute: async (_id, _args, signal) => result({ project: state.project, ...await geometry('/api/validate', state.project, signal) }) },
-    { name: 'edit_design', label: '修改外壳与组件', description: '原子修改外壳、组件、安装孔和接口，可添加或删除。省略字段保留。只接受通过几何检查的设计。外壳高度变化自动同步上盖组件 Z。不得设置 verified。', parameters: editSchema, executionMode: 'sequential',
+    { name: 'edit_design', label: '修改外壳与组件', description: '原子修改外壳、组件、安装孔、粘贴承托台和接口，可添加或删除。省略字段保留。只接受通过几何检查的设计。外壳高度变化自动同步上盖组件 Z。不得设置 verified。', parameters: editSchema, executionMode: 'sequential',
       execute: async (_id, args, signal) => stage(applyEdits(state.project, args), args.reason, signal) },
     { name: 'auto_layout', label: '自动排布组件', description: '按底壳/上盖分层保守排布并扩大外壳，几何检查通过后应用。', parameters: object({}), executionMode: 'sequential',
       execute: async (_id, _args, signal) => stage(autoLayout(state.project), '自动排布组件并适配外壳', signal) },
     { name: 'list_component_templates', label: '查看组件库', description: '列出组件模板、默认安装面和示例尺寸。所有模板均待实测，不含完整实物固定结构。', parameters: object({}),
       execute: async () => result({ templates, note: 'u/v为局部安装面尺寸，thickness为法向厚度。模板尺寸为示例，用户提供实测值时优先采用。' }) },
-    { name: 'add_component', label: '添加组件', description: '从组件库添加待复核组件，支持底壳、上盖或四个侧壁。faceWidth/faceHeight是局部U/V外形，thickness为法向总厚度；缺省采用明确标记的示例尺寸。x/y/z为外壳全局位置。添加后须通过几何检查；自带螺母、卡扣和电池托架不会生成。',
-      parameters: object({ templateId: kind, reason: text, ...optional({ mount, name: text, faceWidth: number, faceHeight: number, thickness: number, x: position, y: position, z: number }) }), executionMode: 'sequential',
+    { name: 'add_component', label: '添加组件', description: '从组件库添加待复核组件，支持底壳、上盖或四个侧壁。faceWidth/faceHeight是局部U/V外形，thickness为法向总厚度；缺省采用明确标记的示例尺寸。无孔屏幕或键盘可用 mountingMethod=adhesive 生成上盖粘贴承托台，并可设置 supportWidth/supportHeight/adhesiveClearance。x/y/z为外壳全局位置。添加后须通过几何检查；mountingMethod=cradle 可生成底壳托架及独立压条；speakerGrille/tactileEnabled 可生成网筋或侧向导向键帽；实物自带螺母和卡扣不生成。',
+      parameters: object({ templateId: kind, reason: text, ...optional({ mount, name: text, faceWidth: number, faceHeight: number, thickness: number, x: position, y: position, z: number,
+        mountingMethod:partFields.mountingMethod,supportEnabled:Type.Boolean(),supportWidth:number,supportHeight:number,adhesiveClearance:number,
+        mountOffset:number,openingShape,openingWidth:number,openingDepth:number,...assemblyFields }) }), executionMode: 'sequential',
       execute: async (_id, args, signal) => {
         const { templateId, reason, ...options } = args;
         const next = structuredClone(state.project);

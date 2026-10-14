@@ -406,3 +406,11 @@
   .login-card { @apply p-6; }
   .topbar-actions .save-status { @apply hidden; }
 }
+
+.module-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 1fr); }
+.module-preview { height: 360px; position: relative; background: #f6f8f9; }
+.module-scene { width: 100%; height: 100%; }
+.module-scene canvas { display: block; }
+.module-preview-empty { height: 100%; display: grid; place-items: center; color: #64748b; font-size: 14px; }
+.module-features { display: grid; gap: 8px; }
+@media (max-width: 1200px) { .module-editor { grid-template-columns: minmax(0, 1fr); } }

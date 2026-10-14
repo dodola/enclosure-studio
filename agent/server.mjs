@@ -8,6 +8,8 @@ import { annotationSchema, createDesignTools, normaliseAnnotations, stripPhotos 
 import { annotationPrompt, assertFinished, configFor, configureRuntime, createRuntime, createSession, designPrompt, selectModel } from './pi.mjs';
 import { providerFailure } from './request-errors.mjs';
 import { protectInternal } from './http-auth.mjs';
+import { moduleModelSchema, moduleModelPrompt, normaliseModuleModel } from './module-model.mjs';
+import { faceDimensions } from '../shared/design.mjs';
 
 const failure = (message, status = 422) => Object.assign(new Error(message), { status });
 async function readBody(req, limit = 20 * 1024 * 1024) {
@@ -35,14 +37,14 @@ export function createHandler({ context, sessionFactory = createSession, geometr
   };
   const json = (res, status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
   const handler = async (req, res) => {
-    let session, unsubscribe, timeout, entry, active = false;
+    let session, unsubscribe, timeout, entry, active = false, ownsEntry = false;
     const controller = new AbortController();
     const abort = () => { controller.abort(); void session?.abort(); };
     res.on('close', abort);
     try {
       cleanup();
       if (req.method === 'GET' && req.url === '/api/ai/config') return json(res, 200, configFor(context));
-      if (req.method !== 'POST' || !['/api/ai/annotate', '/api/ai/chat', '/api/ai/settings', '/api/ai/test'].includes(req.url)) return json(res, 404, { detail: 'AI 接口不存在。' });
+      if (req.method !== 'POST' || !['/api/ai/annotate', '/api/ai/module', '/api/ai/chat', '/api/ai/settings', '/api/ai/test'].includes(req.url)) return json(res, 404, { detail: 'AI 接口不存在。' });
       const settingsRequest = ['/api/ai/settings', '/api/ai/test'].includes(req.url);
       if (settingsRequest) {
         if (!req.headers['content-type']?.startsWith('application/json')) throw failure('请使用 JSON 请求。', 415);
@@ -82,8 +84,32 @@ export function createHandler({ context, sessionFactory = createSession, geometr
         return json(res, 200, { ok: true, provider: model.provider, model: model.id, detail: '模型调用成功。此测试只验证文字连接；图片理解和工具调用请在实际任务中复核。' });
       }
       const annotating = req.url === '/api/ai/annotate';
-      const model = selectModel(context, body, annotating);
+      const modelling = req.url === '/api/ai/module';
+      const model = selectModel(context, body, annotating || modelling);
       timeout = setTimeout(abort, 180000);
+      if (modelling) {
+        const c=body.component, photos=body.photos;
+        if (!c || !['base','lid','front','back','left','right'].includes(c.mount) || ![c.width,c.depth,c.height].every(n=>Number.isFinite(n)&&n>0&&n<=400)) throw failure('模组尺寸或安装面无效。');
+        if (!Array.isArray(photos) || !photos.length || photos.length>4 || photos.some(p=>!p || !['top','bottom','front','side'].includes(p.slot)) || new Set(photos.map(p=>p.slot)).size!==photos.length) throw failure('请上传 1–4 个不同视角的照片。');
+        const {u,v,thickness}=faceDimensions(c);
+        const views=photos.map(p=>({slot:p.slot,calibrated:p.calibrated===true&&['top','bottom'].includes(p.slot),image:parseImage(p.image)}));
+        let result;
+        const tool={name:'submit_module_model',label:'提交统一标注与模组模型',description:'提交全部视角标注、主体和局部实体；已知外形与孔位保持不变。',parameters:moduleModelSchema,
+          execute:async(_id,args)=>{
+            result=undefined;
+            const next=normaliseModuleModel(args,c,views,model);
+            await geometry('/api/module/preview',{...c,moduleModel:next.moduleModel},controller.signal);
+            if(controller.signal.aborted)throw failure('模组建模已停止。',408);
+            result=next;
+            return {content:[{type:'text',text:'标注与模组实体校验通过。请说明待实测项目。'}],details:{}};
+          }};
+        session=await sessionFactory(context,model,[tool],moduleModelPrompt);
+        await session.prompt(`同一模组的图片按以下顺序提供：${JSON.stringify(views.map(p=>({slot:p.slot,calibrated:p.calibrated})))}。已知数据：${JSON.stringify({kind:c.kind,name:c.name,width:u,depth:v,thickness,holes:c.holes||[],mountOffset:c.mountOffset,verified:c.verified===true})}`,{images:views.map(p=>p.image),expandPromptTemplates:false});
+        assertFinished(session);
+        if(controller.signal.aborted)throw failure('模组建模已停止或超时，原模型未修改。',408);
+        if(!result)throw failure('模型未提交有效的统一标注与模组实体，请重试。',502);
+        return json(res,200,result);
+      }
       if (annotating) {
         if (!['top', 'bottom', 'front', 'side'].includes(body.slot) || !Number.isFinite(body.width) || !Number.isFinite(body.depth) || body.width < 3 || body.width > 400 || body.depth < 3 || body.depth > 400) throw failure('组件长宽或照片视角无效。');
         const image = parseImage(body.image);
@@ -119,7 +145,7 @@ export function createHandler({ context, sessionFactory = createSession, geometr
         entry = { id: randomUUID(), session, state, model: `${model.provider}/${model.id}`, busy: false, used: Date.now() };
         sessions.set(entry.id, entry);
       }
-      entry.busy = true; entry.used = Date.now(); session = entry.session;
+      entry.busy = true; ownsEntry = true; entry.used = Date.now(); session = entry.session;
       entry.state.project = project; entry.state.changes = [];
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
       const send = value => { if (!res.destroyed) res.write(JSON.stringify(value) + '\n'); };
@@ -150,8 +176,8 @@ export function createHandler({ context, sessionFactory = createSession, geometr
     } finally {
       if (active) activeRequests--;
       clearTimeout(timeout); unsubscribe?.(); res.off('close', abort);
-      if (entry) { entry.busy = false; entry.used = Date.now(); }
-      else session?.dispose();
+      if (ownsEntry) { entry.busy = false; entry.used = Date.now(); }
+      else if (!entry) session?.dispose();
     }
   };
   handler.dispose = () => { for (const entry of sessions.values()) entry.session.dispose(); sessions.clear(); };

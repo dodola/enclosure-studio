@@ -9,8 +9,9 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .geometry import build, mounting_coupon, printable_lid, serialise
-from .models import Project, validate_design
+from .geometry import build, build_kit, mounting_coupon, printable_lid, printable_extra, serialise
+from .models import Component, Project, validate_design
+from .module_geometry import build_module, module_to_world
 from .vision import analyse
 from .auth import install_auth, login_store
 
@@ -27,7 +28,7 @@ def health():
 async def ai_proxy(path: str, request: Request):
     """Keep the Pi SDK in Node; serve a single same-origin API in dev and production."""
     import httpx
-    if (request.method, path) not in {("GET", "config"), ("POST", "annotate"), ("POST", "chat"), ("POST", "settings"), ("POST", "test")}:
+    if (request.method, path) not in {("GET", "config"), ("POST", "annotate"), ("POST", "module"), ("POST", "chat"), ("POST", "settings"), ("POST", "test")}:
         raise HTTPException(404, "AI 接口不存在。")
     if path in {"settings", "test"}:
         from urllib.parse import urlparse
@@ -90,11 +91,36 @@ def validate(project: Project):
     return {"issues": validate_design(project)}
 
 
+@app.post('/api/normalize')
+def normalize(project: Project):
+    """Return the accepted representation, including defaults and numeric coercions."""
+    return project.model_dump()
+
+
 @app.post("/api/preview")
 def preview(project: Project):
     try:
-        base, lid, issues = build(project)
-        return {"base": serialise(base), "lid": serialise(lid), "issues": issues}
+        base, lid, issues, extras = build_kit(project)
+        return {"base": serialise(base), "lid": serialise(lid), "issues": issues,
+                'modules': [{'componentId': c.id, 'mesh': serialise(module_to_world(build_module(c), c))} for c in project.components if c.moduleModel],
+                'extras': [{**{k:v for k,v in item.items() if k!='mesh'}, 'filename':name, 'mesh':serialise(item['mesh'])} for name,item in extras.items()]}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post('/api/module/preview')
+def module_preview(component: Component):
+    try:
+        return {'mesh': serialise(build_module(component))}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post('/api/module/export')
+def module_export(component: Component):
+    try:
+        return Response(build_module(component).export(file_type='stl'), media_type='model/stl',
+                        headers={'Content-Disposition': 'attachment; filename="module.stl"'})
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -102,7 +128,10 @@ def preview(project: Project):
 @app.post("/api/export")
 def export(project: Project):
     try:
-        base, lid, issues = build(project)
+        for c in project.components:
+            if c.moduleModel:
+                build_module(c)
+        base, lid, issues, extras = build_kit(project)
         csv_buffer = io.StringIO()
         writer = csv.writer(csv_buffer)
         writer.writerow(["component", "feature", "mount", "u_mm", "v_mm", "diameter_mm", "source", "verified"])
@@ -113,6 +142,9 @@ def export(project: Project):
         manifest["issues"] = issues
         manifest["units"] = "mm"
         manifest["printOrientation"] = {"base.stl": "底板朝下", "lid.stl": "外表面朝下、定位边朝上"}
+        manifest['extraParts'] = [{**{k:v for k,v in item.items() if k!='mesh'}, 'filename':name} for name,item in extras.items()]
+        manifest['assemblyCoordinates'] = 'assembly.json 和预览为装配坐标；独立 STL 已移到打印床原点。'
+        manifest['printOrientation'].update({name: '压条大平面朝下' if name.startswith('clamp') else '键杆法向竖直；防脱肩悬挑请在切片中检查支撑' for name in extras})
         notes = [
             "# 壳研 · 打印说明", "", f"项目：{project.name}", "", "所有模型单位为毫米。",
             f"外壳竖直四角圆角：R{project.enclosure.cornerRadius:g} mm（0 为直角）；不包含顶面/底面边缘圆角或倒角。",
@@ -122,7 +154,17 @@ def export(project: Project):
             "如包含 mounting-test.stl，请先试打印验证孔位，再检查接口插拔。", "",
             "measurements.csv 的 mount 表示安装面；孔位采用局部 U/V：底壳及上盖 X/Y，前后侧 X/Z，左右侧 Y/Z，侧面 V 向上。",
             f"四角上盖螺丝头平底沉孔：直径 {project.enclosure.screwHeadDiameter:g} mm，深度 {project.enclosure.screwHeadDepth:g} mm（深度 0 关闭）。",
-            "电池与无孔内部模块仅提供占位；按钮、开关及旋钮的螺母或卡扣固定须实物复核，扬声器未包含防护网。", "",
+            "上盖粘贴承托台位于内侧：下表面随组件安装基准+胶层厚度定位，通过外圈连接上盖。先试打边框、核对接触面再粘贴。",
+            '电池/模块可选择底壳托架与可拆压条；压条须配实物螺丝，垫片和绝缘胶按实测补充。',
+            'M3 热熔孔为用户指定的安装孔径/深度；先试打局部再安装铜螺母，盲孔不含打印螺纹。',
+            '轻触键帽含导向筒、防脱肩和运动间隙，依靠实物轻触开关回弹；侧向筒和防脱肩请在切片中检查支撑。',
+            '保留区只用于空间检查，不会挖空外壳；拆卸保留区按已拆上盖和所属组件可拆压条的状态检查。', '',
+            '## 装配顺序', '',
+            '1. 先打印孔位小样及关键配合局部，复核实物和螺丝/铜螺母规格。',
+            '2. 检查切片中的薄壁、悬挑和支撑；打印底壳、上盖及所有独立压条/键帽。',
+            '3. 从壳内装入键帽后安装并固定实物开关，验证全行程和回弹；再安装主板及内部模块。',
+            '4. 连接线缆并检查保留区，放入电池后锁紧可拆压条，避免挤压电芯。',
+            '5. 在上盖内侧粘贴屏幕/键盘，胶层固化后接线、合盖，核对插拔和拆卸路径。', '',
             "## 待复核事项", "",
         ]
         notes.extend(f"- {i['message']}" for i in issues)
@@ -132,6 +174,8 @@ def export(project: Project):
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("base.stl", base.export(file_type="stl"))
             archive.writestr("lid.stl", printable_lid(lid).export(file_type="stl"))
+            for name,item in extras.items():
+                archive.writestr(name,printable_extra(item).export(file_type='stl'))
             archive.writestr("assembly.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             archive.writestr("measurements.csv", "\ufeff" + csv_buffer.getvalue())
             archive.writestr("README.md", "\n".join(notes))

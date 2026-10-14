@@ -1,7 +1,7 @@
 [
   {"id":"board","name":"开发板","description":"矩形 PCB，输入实测尺寸与安装孔","mount":"base","u":60,"v":40,"thickness":12,"openingShape":"none","openingWidth":0,"openingDepth":0,"openingRadius":0},
-  {"id":"screen","name":"屏幕","description":"面板显示区开口，按真实孔位固定","mount":"lid","u":80,"v":52,"thickness":6,"openingShape":"rect","openingWidth":64,"openingDepth":38,"openingRadius":0},
-  {"id":"keyboard","name":"键盘","description":"露出按键区域的面板组件","mount":"lid","u":72,"v":32,"thickness":6,"openingShape":"rect","openingWidth":66,"openingDepth":26,"openingRadius":0},
+  {"id":"screen","name":"屏幕","description":"面板显示区开口；无安装孔时默认生成粘贴承托台","mount":"lid","u":80,"v":52,"thickness":6,"openingShape":"rect","openingWidth":64,"openingDepth":38,"openingRadius":0,"mountingMethod":"adhesive","supportEnabled":true,"supportWidth":3,"supportHeight":1.2,"adhesiveClearance":0.3},
+  {"id":"keyboard","name":"键盘","description":"露出按键区域；无安装孔时默认生成粘贴承托台","mount":"lid","u":72,"v":32,"thickness":6,"openingShape":"rect","openingWidth":66,"openingDepth":26,"openingRadius":0,"mountingMethod":"adhesive","supportEnabled":true,"supportWidth":3,"supportHeight":1.2,"adhesiveClearance":0.3},
   {"id":"button","name":"面板按钮","description":"圆孔，可安装在上盖或四个侧壁；需螺母固定","mount":"lid","u":16,"v":16,"thickness":12,"openingShape":"circle","openingWidth":12,"openingDepth":12,"openingRadius":0},
   {"id":"switch","name":"拨动 / 船型开关","description":"矩形或圆角矩形开孔；卡扣尺寸需实测","mount":"right","u":20,"v":14,"thickness":12,"openingShape":"roundedRect","openingWidth":16,"openingDepth":10,"openingRadius":1},
   {"id":"encoder","name":"旋钮 / 编码器","description":"圆形轴孔，侧壁或上盖安装；需螺母固定","mount":"left","u":18,"v":18,"thickness":16,"openingShape":"circle","openingWidth":7,"openingDepth":7,"openingRadius":0},

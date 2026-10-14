@@ -1,4 +1,5 @@
 import type { Enclosure, Kind, Mount, Part, Project, OpeningShape } from '../src/types';
+export const assemblyDefaults: Required<Pick<Part, 'cradleWall' | 'clampThickness' | 'strapSlots' | 'fastenerType' | 'insertDiameter' | 'insertDepth' | 'speakerGrille' | 'grilleBarWidth' | 'grilleSpacing' | 'grilleThickness' | 'tactileEnabled' | 'keyDiameter' | 'keyTravel' | 'keyClearance' | 'keyFlange' | 'keyProjection' | 'guideLength'>>;
 export const templates: { id: Kind; name: string; description: string; mount: Mount; u: number; v: number; thickness: number; openingShape: OpeningShape; openingWidth: number; openingDepth: number; openingRadius: number }[];
 export const mountNames: Record<Mount, string>;
 export function isSideMount(mount: Mount): boolean;
@@ -9,4 +10,5 @@ export function normaliseProject(project: Project): Project;
 export function changeMount(part: Part, mount: Mount, enclosure: Enclosure): Partial<Part>;
 export function createComponent(templateId: Kind, project: Project, options: Partial<Part> & { id: string; faceWidth?: number; faceHeight?: number; thickness?: number }): Part;
 export function resizeEnclosure(project: Project, patch: Partial<Enclosure>): Project;
+export function patchComponent(project: Project, id: string, patch: Partial<Part>): Project;
 export function autoLayoutProject(project: Project): Project;
